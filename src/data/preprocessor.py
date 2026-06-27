@@ -1,14 +1,15 @@
 import pandas as pd
 import numpy as np
 import joblib
+from src.config import WINDOW_SIZE, SPLIT_SIZE
 
 from sklearn.preprocessing import StandardScaler
 from src.data.loader import StockLoader
 
 class TimeSeriesPreprocessor:
     def __init__(self,
-                 windows_size:int = 30,
-                 split_size:float = 0.9
+                 windows_size:int = WINDOW_SIZE,
+                 split_size:float = SPLIT_SIZE
                  ):
         self.windows_size = windows_size
         self.split_size = split_size
@@ -74,9 +75,7 @@ class TimeSeriesPreprocessor:
         }                           
 
 if __name__ == "__main__":
-    stock_loader = StockLoader(ticker = "AAPL", 
-                               start_date= "2010-01-01",
-                               end_date="2026-06-26", auto_adjust= True)
+    stock_loader = StockLoader()
     
     dataset = stock_loader.fetch()
 

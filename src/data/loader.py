@@ -2,9 +2,11 @@
 import pandas as pd
 import numpy as np
 import yfinance
+from src.config import TICKER, START_DATE, END_DATE
+
 
 class StockLoader:
-    def __init__(self, ticker:str, start_date:str, end_date:str, auto_adjust: bool = True):
+    def __init__(self, ticker:str = TICKER, start_date:str = START_DATE, end_date:str = END_DATE, auto_adjust: bool = True):
         self.ticker = ticker
         self.start_date = start_date
         self.end_date = end_date
@@ -28,16 +30,12 @@ class StockLoader:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        # dataset = data["Close"]
-        # dataset = stock_close.values.reshape(-1, 1)
         return data 
     
 
 # in the case of using manually:
 if __name__ == "__main__":
-    stock_loader = StockLoader(ticker = "AAPL", 
-                               start_date= "2010-01-01",
-                               end_date="2026-06-26", auto_adjust= True)
+    stock_loader = StockLoader()
     
     dataset = stock_loader.fetch()
     print(dataset.head())
