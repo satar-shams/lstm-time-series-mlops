@@ -1,3 +1,9 @@
+APP_HOST = "127.0.0.1"
+APP_PORT = 8000
+
+MODEL_PATH = "models/best_model.keras"
+SCALER_PATH = "models/scaler.bin"
+
 TICKER = "AAPL"
 START_DATE = "2010-01-01"
 END_DATE = "2026-06-26"
