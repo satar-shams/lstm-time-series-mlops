@@ -69,6 +69,8 @@ X_train = X_train.reshape(
 # ==========================================
 # Create test data
 # ==========================================
+
+# this data come directly from dataset after .reshape(-1, 1) before scaling data
 test_data = scaled_data[training_data_len - 30:]
 
 X_test = []
