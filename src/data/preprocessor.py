@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import joblib
-from src.config import WINDOW_SIZE, SPLIT_SIZE
+from src.config import WINDOW_SIZE, TRAIN_SPLIT, VALIDATION_SPLIT
 
 from sklearn.preprocessing import StandardScaler
 from src.data.loader import StockLoader
@@ -9,19 +9,23 @@ from src.data.loader import StockLoader
 class TimeSeriesPreprocessor:
     def __init__(self,
                  windows_size:int = WINDOW_SIZE,
-                 split_size:float = SPLIT_SIZE
+                 train_split_size:float = TRAIN_SPLIT,
+                 validation_split_size:float = VALIDATION_SPLIT
                  ):
         self.windows_size = windows_size
-        self.split_size = split_size
+        self.train_split_size = train_split_size
+        self.validation_split_size = validation_split_size
         self.scaler = StandardScaler()    
 
     def fit_transform(self, df:pd.DataFrame)-> np.ndarray:
             stock_close = df["Close"]            
             dataset = stock_close.values.reshape(-1, 1)
             
-            self.training_data_len  = int(np.ceil(len(dataset) * self.split_size))
-            self.y_test_real = stock_close.iloc[self.training_data_len:]
-            self.scaler.fit(dataset[:self.training_data_len])
+            self.training_end_index = int(np.ceil(len(dataset) * self.train_split_size))
+            self.validation_end_index = int(np.ceil(len(dataset) * self.validation_split_size))
+            self.y_val_real = stock_close.iloc[self.training_end_index:self.validation_end_index]
+            self.y_test_real = stock_close.iloc[self.validation_end_index:]
+            self.scaler.fit(dataset[:self.training_end_index])
             scaled_data = self.scaler.transform(dataset)
 
             return scaled_data
@@ -32,7 +36,7 @@ class TimeSeriesPreprocessor:
         loaded_scaler = self.load_scaler(path)
         return loaded_scaler.transform(raw_data)
 
-    # in order to use this function, we need to split data for test and train and then call below function for both test and train
+    # Create sliding windows independently for train, validation, and test splits.
     def create_windows(self, scaled_data:np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         X = []
         y = []
@@ -59,18 +63,24 @@ class TimeSeriesPreprocessor:
 
     def run_all(self, df:pd.DataFrame) -> dict[str, np.ndarray]:
         scaled_data = self.fit_transform(df)
-        training_data = scaled_data[:self.training_data_len]
+        training_data = scaled_data[ : self.training_end_index]
         X_train, y_train = self.create_windows(training_data)
 
-        test_data = scaled_data[self.training_data_len - self.windows_size:]
+        val_data = scaled_data[self.training_end_index - self.windows_size : self.validation_end_index]
+        X_val, y_val = self.create_windows(val_data)     
+
+        test_data = scaled_data[self.validation_end_index - self.windows_size : ]
         X_test, y_test = self.create_windows(test_data)     
 
         return {
             "X_train": X_train,
             "y_train": y_train,
+            "X_val":X_val,
+            "y_val":y_val,
             "X_test": X_test,
             "y_test": y_test,
             # "y_test_scaled": y_test_scaled,
+            "y_val_real": self.y_val_real,
             "y_test_real": self.y_test_real,
         }                           
 
@@ -83,6 +93,5 @@ if __name__ == "__main__":
     preprocess = TimeSeriesPreprocessor()
     data = preprocess.run_all(dataset)
     preprocess.save_scaler('models/scaler.bin')
-        
-    print("y_test shape:", data["y_test"].shape)
-    print("y_test_real shape:", data["y_test_real"].shape)
+
+    

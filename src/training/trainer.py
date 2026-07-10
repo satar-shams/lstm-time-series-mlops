@@ -9,8 +9,10 @@ import numpy as np
 
 from itertools import product
 from tensorflow import keras
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from tensorflow.keras.optimizers import Adam
+
+from tensorflow.keras.callbacks import EarlyStopping
 
 import os
 
@@ -33,31 +35,53 @@ class TimeSeriesTraining:
         ]
         return TRAINING_CONFIGS
 
-    def evaluation_best_model(self, model) -> bool:            
+    def evaluate_model(self, model) -> dict:            
         print("ended\n")
-        predictions = model.predict(self.data["X_test"], verbose=0)
+        predictions = model.predict(self.data["X_val"], verbose=0)
 
         y_pred_real = self.preprocess.scaler.inverse_transform(predictions)
+        
+        mae = mean_absolute_error(
+            self.data["y_val_real"],
+            y_pred_real
+        )
 
         rmse = np.sqrt(
             mean_squared_error(
-                self.data["y_test_real"],
+                self.data["y_val_real"],
                 y_pred_real
             )
         )
 
         rmse_percent = (
-            rmse / self.data["y_test_real"].mean()
+            rmse / self.data["y_val_real"].mean()
         ) * 100
-
-        print(f"RMSE %: {rmse_percent:.2f}%")
-
-        if rmse_percent < self.best_rmse_percent:
-            self.best_rmse_percent = rmse_percent
-            self.best_model = model
+        return {
+            "mae": mae,
+            "rmse": rmse,
+            "rmse_percent": rmse_percent
+        }
+        
+    def evaluate_best_model(self, metrics:dict)-> bool:
+        
+        if metrics["rmse_percent"] < self.best_rmse_percent:
+            self.best_rmse_percent = metrics["rmse_percent"]
+            self.best_rmse = metrics["rmse"]
+            self.best_mae = metrics["mae"]
             return True
         else: return False
-            
+
+    def create_callbacks(self) -> EarlyStopping:
+        early_stopping = EarlyStopping(
+            monitor="val_loss",
+            patience=10,
+            restore_best_weights=True,
+            verbose=0,
+        )
+
+        return early_stopping
+
+
     def show_best_model(self):
         print("\n==============================")
         print("Best configuration:", self.best_config)
@@ -80,7 +104,9 @@ class TimeSeriesTraining:
     def train_model(self):
         self.best_model = None
         self.best_config = None
+        self.best_rmse = float("inf")
         self.best_rmse_percent = float("inf")
+        self.best_mae = float("inf")
 
         self.data = self.load_preprocessing_data() # we can assign window for future purposes
         configs = self.prepare_configuration()
@@ -104,12 +130,37 @@ class TimeSeriesTraining:
                 metrics=[keras.metrics.RootMeanSquaredError()]
             )
 
-            model.fit(self.data["X_train"], self.data["y_train"],
-                      epochs=cfg.get("epochs", DEFAULT_EPOCHS), batch_size=cfg.get("batch_size", DEFAULT_BATCH_SIZE), verbose=0
+            early_stopping = self.create_callbacks()
+            history = model.fit(
+                self.data["X_train"], 
+                self.data["y_train"],
+                validation_data=(
+                    self.data["X_val"],
+                    self.data["y_val"]
+                ),
+                epochs=cfg.get("epochs", DEFAULT_EPOCHS), 
+                batch_size=cfg.get("batch_size", DEFAULT_BATCH_SIZE), 
+                callbacks=[early_stopping],
+                verbose=0
             )
 
-            if(self.evaluation_best_model(model)):
+            metrics =self.evaluate_model(model)
+
+            stopped_epoch = len(history.history["loss"])
+            best_epoch = early_stopping.best_epoch + 1
+
+            print(f"Training stopped at epoch: {stopped_epoch}")
+            print(f"Best epoch: {best_epoch}\n")
+
+            print(f"MAE: {metrics['mae']:.4f}")
+            print(f"RMSE: {metrics['rmse']:.4f}")
+            print(f"RMSE %: {metrics['rmse_percent']:.2f}%")
+
+
+            if(self.evaluate_best_model(metrics)):
                 self.best_config = cfg
+                self.best_model = model
+
         
         self.show_best_model()
         self.save_best_model_scaler()
