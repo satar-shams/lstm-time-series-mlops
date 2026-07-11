@@ -1,5 +1,5 @@
-from src.config import HYPER_PARAMS
-from src.config import WINDOW_SIZE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LEARNING_RATE, DEFAULT_LSTM_UNITS, DEFAULT_DENSE_UNITS, DEFAULT_DROPOUT_RATE
+from src.config import HYPER_PARAMS, DEFAULTS_PARAMS
+from src.config import WINDOW_SIZE, MLFLOW_EXPERIMENT_NAME, MLFLOW_TRACKING_URI
 
 from src.data.loader import StockLoader
 from src.data.preprocessor import TimeSeriesPreprocessor
@@ -9,8 +9,15 @@ import numpy as np
 
 from itertools import product
 from tensorflow import keras
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from tensorflow.keras.optimizers import Adam
+
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import Callback
+
+import mlflow
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, TensorSpec
 
 import os
 
@@ -27,93 +34,196 @@ class TimeSeriesTraining:
         return preprocessed_data
     
     def prepare_configuration(self) -> list[dict[str, any]]:
-        TRAINING_CONFIGS = [
-        dict(zip(HYPER_PARAMS.keys(), values))
-        for values in product(*HYPER_PARAMS.values())
-        ]
-        return TRAINING_CONFIGS
-
-    def evaluation_best_model(self, model) -> bool:            
-        print("ended\n")
-        predictions = model.predict(self.data["X_test"], verbose=0)
-
+        return [
+            dict(zip(HYPER_PARAMS.keys(), values))
+            for values in product(*HYPER_PARAMS.values())
+        ]        
+   
+    def evaluate_dataset(self, model, X, y_real) -> dict[str, float]:          
+        predictions = model.predict(X, verbose=0)
         y_pred_real = self.preprocess.scaler.inverse_transform(predictions)
-
+        
+        mae = mean_absolute_error(
+            y_real,
+            y_pred_real
+        )
         rmse = np.sqrt(
             mean_squared_error(
-                self.data["y_test_real"],
+                y_real,
                 y_pred_real
             )
         )
-
         rmse_percent = (
-            rmse / self.data["y_test_real"].mean()
+            rmse / y_real.mean()
         ) * 100
-
-        print(f"RMSE %: {rmse_percent:.2f}%")
-
-        if rmse_percent < self.best_rmse_percent:
-            self.best_rmse_percent = rmse_percent
-            self.best_model = model
+        
+        return {
+            "mae": mae,
+            "rmse": rmse,
+            "rmse_percent": rmse_percent
+        }    
+    
+    def update_best_model(self, metrics:dict[str, float])-> bool:        
+        if metrics["rmse_percent"] < self.best_rmse_percent:
+            self.best_rmse_percent = metrics["rmse_percent"]
+            self.best_rmse = metrics["rmse"]
+            self.best_mae = metrics["mae"]
             return True
         else: return False
-            
-    def show_best_model(self):
+
+    def create_callbacks(self)-> list[Callback]:
+        early_stopping = EarlyStopping(
+            monitor="val_loss",
+            patience=10,
+            restore_best_weights=True,
+            verbose=0,
+        )
+        reduce_lr = ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=1,
+        )
+        return [early_stopping, reduce_lr]
+
+    def show_validation_metrics(self, metrics:dict[str, float]):
         print("\n==============================")
+        print("Validation Metrics")
+        print("==============================")
+        print(f"MAE: {metrics['mae']:.4f}")
+        print(f"RMSE: {metrics['rmse']:.4f}")
+        print(f"RMSE %: {metrics['rmse_percent']:.2f}%")
+        print("==============================")
+    
+    def show_test_evaluation(self):
+        metrics  = self.evaluate_dataset(self.best_model, self.data["X_test"], self.data["y_test_real"])
+        print("\n==============================")
+        print("Final Test Metrics")
+        print("==============================")
         print("Best configuration:", self.best_config)
-        print(f"Best RMSE %: {self.best_rmse_percent:.2f}%")
+        print(f"MAE: {metrics['mae']:.4f}")
+        print(f"RMSE: {metrics['rmse']:.4f}")
+        print(f"RMSE %: {metrics['rmse_percent']:.2f}%")
         print("==============================")
 
-    def save_best_model_scaler(self):
+    def save_best_model(self):
+        if self.best_model is None:
+            raise RuntimeError("No model was selected — training may have failed for all configs.")        
         os.makedirs("models", exist_ok=True)
-
         self.best_model.save("models/best_model.keras")
-        self.preprocess.save_scaler("models/scaler.bin")
-
-        print("\n✅ Best model saved:")
+        print("\n✅ Best model saved in:")
         print("models/best_model.keras\n")
 
-        # since we need just scaler once for all of models then we save it at the end:
-        print("\n✅ scaler saved:")
-        print("models/scaler.bin")
-    
+    def print_default_values(self)->None:
+        print("\nDefault parameters:")
+        for key, default_value in DEFAULTS_PARAMS.items():
+            if key not in HYPER_PARAMS:
+                print(f"  {key} = {default_value}")
+        print()
+
     def train_model(self):
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.tensorflow.autolog(disable=True)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
         self.best_model = None
         self.best_config = None
+        self.best_rmse = float("inf")
         self.best_rmse_percent = float("inf")
+        self.best_mae = float("inf")
 
         self.data = self.load_preprocessing_data() # we can assign window for future purposes
-        configs = self.prepare_configuration()
-
-        # here we can make advance much more flexible and use all or most of parameters default or from cfg
-        for cfg in configs:
-            print("\nTraining with ", end ="")
-            for key, value in cfg.items(): print(f"{key} = {value} ", end="")        
-            print()
-
-            forecaster = LSTMForecaster()
-            model = forecaster.build(input_shape= (self.data["X_train"].shape[1], 1),
-                                     lstm_units= cfg.get("lstm_units", DEFAULT_LSTM_UNITS),
-                                     dense_units= cfg.get("dense_units", DEFAULT_DENSE_UNITS),
-                                     dropout_rate= cfg.get("dropout_rate", DEFAULT_DROPOUT_RATE)
-                                     )
-
-            model.compile(
-                optimizer=Adam(cfg.get("learning_rate", DEFAULT_LEARNING_RATE)),
-                loss="mae",
-                metrics=[keras.metrics.RootMeanSquaredError()]
-            )
-
-            model.fit(self.data["X_train"], self.data["y_train"],
-                      epochs=cfg.get("epochs", DEFAULT_EPOCHS), batch_size=cfg.get("batch_size", DEFAULT_BATCH_SIZE), verbose=0
-            )
-
-            if(self.evaluation_best_model(model)):
-                self.best_config = cfg
+        os.makedirs("models", exist_ok=True)
+        self.preprocess.save_scaler("models/scaler.bin")
         
-        self.show_best_model()
-        self.save_best_model_scaler()
+        configs = self.prepare_configuration()        
+        self.print_default_values()
 
+        # we need to change window size properly later when we define a list of windows, or hyper parameters
+        signature = ModelSignature(
+            inputs=Schema([TensorSpec(np.dtype("float32"), (-1, WINDOW_SIZE, 1))]),
+            outputs=Schema([TensorSpec(np.dtype("float32"), (-1, 1))])
+        )   
+        for cfg in configs:
+            with mlflow.start_run():
+                print("\nTraining with ", end ="")
+                for key, value in cfg.items(): 
+                    mlflow.log_param(key, value)
+                    print(f"{key} = {value} ", end="")        
+                print()
+                for key, default_value in DEFAULTS_PARAMS.items():
+                    if key not in HYPER_PARAMS:
+                        mlflow.log_param(key, default_value)
+                forecaster = LSTMForecaster()
+                model = forecaster.build(input_shape= (self.data["X_train"].shape[1], 1),
+                                        lstm_units= cfg.get("lstm_units", DEFAULTS_PARAMS["lstm_units"]),
+                                        dense_units= cfg.get("dense_units", DEFAULTS_PARAMS["dense_units"]),
+                                        dropout_rate= cfg.get("dropout_rate", DEFAULTS_PARAMS["dropout_rate"])
+                                        )
+                model.compile(
+                    optimizer=Adam(
+                        learning_rate=cfg.get(
+                            "learning_rate",
+                            DEFAULTS_PARAMS["learning_rate"],
+                        ),
+                        clipnorm=cfg.get(
+                            "clip_norm",
+                            DEFAULTS_PARAMS["clip_norm"],
+                        ),
+                    ),
+                    loss="mae",
+                    metrics=[keras.metrics.RootMeanSquaredError()],
+                )
+
+                callbacks = self.create_callbacks()
+                early_stopping = next(
+                    cb for cb in callbacks
+                    if isinstance(cb, EarlyStopping)
+                )
+
+                history = model.fit(
+                    self.data["X_train"], 
+                    self.data["y_train"],
+                    validation_data=(
+                        self.data["X_val"],
+                        self.data["y_val"]
+                    ),
+                    epochs=cfg.get("epochs", DEFAULTS_PARAMS["epochs"]), 
+                    batch_size=cfg.get("batch_size", DEFAULTS_PARAMS["batch_size"]), 
+                    callbacks=callbacks,
+                    verbose=0,
+                )
+
+                metrics = self.evaluate_dataset(model, self.data["X_val"], self.data["y_val_real"])
+                for key, value in metrics.items():
+                    mlflow.log_metric(f"val_{key}", value)
+                
+                stopped_epoch = len(history.history["loss"])
+                best_epoch = early_stopping.best_epoch + 1
+                mlflow.log_metric("best_epoch", best_epoch)
+                mlflow.log_metric("stopped_epoch", stopped_epoch)
+
+                print(f"Training stopped at epoch: {stopped_epoch}")
+                print(f"Best epoch: {best_epoch}\n")
+
+
+                self.show_validation_metrics(metrics)
+
+                if self.update_best_model(metrics):
+                    self.best_config = cfg.copy()
+                    self.best_model = model
+                    # # Log model artifact for this winning config
+                    mlflow.tensorflow.log_model(model, name="model", signature=signature)
+                    # Log scaler artifact — already saved to disk above
+                    mlflow.log_artifact("models/scaler.bin", artifact_path="scaler")
+
+        print("\nBest Model Validation Data")
+        print(f"  MAE: {self.best_mae:.4f}")
+        print(f"  RMSE: {self.best_rmse:.4f}")
+        print(f"  RMSE %: {self.best_rmse_percent:.2f}%")
+        self.show_test_evaluation()        
+        self.save_best_model()
     
 if __name__ == "__main__":
     model = TimeSeriesTraining()

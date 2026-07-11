@@ -2,12 +2,14 @@
 
 A production-structured ML pipeline for forecasting AAPL stock prices using
 a stacked LSTM model. Built with a focus on engineering rigour: modular OOP
-design, config-driven hyperparameter sweeps, containerised serving, structured
-logging, input validation, and automated tests.
+design, config-driven hyperparameter sweeps, three-way train/val/test split,
+early stopping, adaptive learning rate scheduling, gradient clipping,
+MLflow experiment tracking, containerised serving, structured logging,
+input validation, and automated tests.
 
-> **Status:** Phase 1 complete. The pipeline covers the full lifecycle from
-> raw data to a served, containerised API. MLflow experiment tracking and a
-> proper train/validation/test split are scoped for Phase 2.
+> **Status:** Phase 1 complete (`v1.0.0`). Phase 2 active on `dev` —
+> MLflow tracking is wired in; full hyperparameter search with Optuna,
+> walk-forward validation, and MLflow Model Registry are next.
 
 ---
 
@@ -16,14 +18,14 @@ logging, input validation, and automated tests.
 ```
 lstm-time-series-mlops/
 ├── src/
-│   ├── config.py                  # Single source of truth for all constants
+│   ├── config.py                  # Single source of truth for all constants and defaults
 │   ├── data/
 │   │   ├── loader.py              # StockLoader — yfinance fetch + validation
-│   │   └── preprocessor.py        # TimeSeriesPreprocessor — scaling, windowing
+│   │   └── preprocessor.py        # TimeSeriesPreprocessor — scaling, windowing, three-way split
 │   ├── models/
 │   │   └── lstm_model.py          # LSTMForecaster — architecture only
 │   ├── training/
-│   │   └── trainer.py             # TimeSeriesTraining — grid search + evaluation
+│   │   └── trainer.py             # TimeSeriesTraining — grid search, callbacks, MLflow logging
 │   └── inference/
 │       └── predictor.py           # Predictor — load model/scaler, predict, inverse-transform
 ├── app/
@@ -37,6 +39,9 @@ lstm-time-series-mlops/
 │   ├── exploration.ipynb
 │   └── train_legacy.py            # Original flat training script, kept for reference
 ├── models/                        # Gitignored — populated by training runs
+├── mlruns/                        # Gitignored — MLflow local run metadata
+├── mlartifacts/                   # Gitignored — MLflow model and scaler artifacts
+├── mlflow.db                      # Gitignored — MLflow SQLite backend
 ├── Dockerfile
 ├── requirements.txt               # Top-level production dependencies
 ├── requirements.lock              # Full pinned environment (used by Docker)
@@ -53,10 +58,32 @@ lstm-time-series-mlops/
 | Architecture | Input(30,1) → LSTM(64) → LSTM(64) → Dense(128, relu) → Dropout(0.5) → Dense(1) |
 | Input | 30-day rolling window of adjusted closing price |
 | Target | Next-day closing price |
-| Train / test split | 90% / 10%, chronological — no shuffling |
-| Scaler | `StandardScaler` fit on training data only (no leakage) |
+| Split | 70% train / 15% validation / 15% test, chronological — no shuffling |
+| Scaler | `StandardScaler` fit on training data only (no leakage into val or test) |
+| Optimizer | Adam with `clipnorm=1.0` (gradient clipping for LSTM stability) |
+| Callbacks | `EarlyStopping` (patience=10, restore\_best\_weights) + `ReduceLROnPlateau` (factor=0.5, patience=5) |
 | Hyperparameter search | Grid search via `itertools.product` over `config.HYPER_PARAMS` |
-| Best observed RMSE% | ~2% (varies per run — see Known Limitations) |
+| Model selection criterion | Validation RMSE% — test set never touched during selection |
+| Experiment tracking | MLflow with SQLite backend and dedicated artifact store |
+
+---
+
+## Results
+
+| Split | Period | RMSE% | Notes |
+|---|---|---|---|
+| Validation | 2021–2024 | ~3–4% | Used for model selection |
+| Test | 2024–2026 | ~14–17% | Held-out, touched once after selection |
+
+The gap between validation and test RMSE% is primarily attributable to
+**distribution shift**: the model was trained on 2010–2021 price data, while
+the test period (2024–2026) represents a structurally different price regime.
+The `StandardScaler` was fit on training data only, so test-period prices
+fall partially outside the scaler's fitted distribution.
+
+These results reflect a **baseline configuration** — only `batch_size` was
+swept during hyperparameter search, with all other parameters held at
+defaults. A full Optuna-based sweep is scoped for Phase 2.
 
 ---
 
@@ -67,6 +94,7 @@ lstm-time-series-mlops/
 | Model | TensorFlow 2.18.0 / Keras 3.15.0 |
 | Data | yfinance, pandas, NumPy |
 | Preprocessing | scikit-learn `StandardScaler` |
+| Experiment tracking | MLflow 3.14.0 (SQLite backend) |
 | Serving | FastAPI + Uvicorn |
 | Persistence | joblib (scaler), Keras native `.keras` format (model) |
 | Containerisation | Docker (python:3.12-slim) |
@@ -86,23 +114,38 @@ source .venv/bin/activate
 pip install -r requirements.lock
 ```
 
-### 2. Train the model
+### 2. Start the MLflow server
+
+Run this in a **separate terminal** before training. MLflow must be running
+for experiment tracking to work.
+
+```bash
+mlflow server \
+    --backend-store-uri sqlite:///mlflow.db \
+    --default-artifact-root file:./mlartifacts
+```
+
+The MLflow UI will be available at `http://127.0.0.1:5000`.
+
+### 3. Train the model
 
 ```bash
 python -m src.training.trainer
 ```
 
-This fetches AAPL data via yfinance, runs a hyperparameter grid search, saves
-the best model to `models/best_model.keras` and the fitted scaler to
-`models/scaler.bin`.
+Fetches AAPL data via yfinance, runs a hyperparameter grid search with early
+stopping and adaptive learning rate scheduling, logs every config as a
+separate MLflow run (params, metrics, model artifact for the winner),
+evaluates on the held-out test set, then saves the best model locally to
+`models/best_model.keras` and the fitted scaler to `models/scaler.bin`.
 
-### 3. Run the API locally
+### 4. Run the API locally
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 4. Test the endpoints
+### 5. Test the endpoints
 
 ```bash
 curl http://localhost:8000/
@@ -159,30 +202,45 @@ python -m pytest
 ```
 
 Tests cover:
-- `create_windows` boundary cases (first, middle, and last window) with
+- `create_windows` boundary cases (first, middle, last window) with
   hand-verified expected arrays
-- Scaler fit/transform/inverse_transform round-trip correctness
+- Scaler fit/transform/inverse\_transform round-trip correctness
 - `Predictor` input length validation (`ValueError` on wrong-length input)
 
 ---
 
 ## Configuration
 
-All constants live in `src/config.py`. To change the ticker, date range,
-default architecture parameters, or active hyperparameter sweep values,
-edit that file — nothing is hardcoded elsewhere.
+All constants and default parameter values live in `src/config.py`.
+`DEFAULTS_PARAMS` is the single source of truth for all model and training
+defaults. `HYPER_PARAMS` defines which parameters are actively swept —
+comment/uncomment entries to control the search space.
 
 ```python
 # src/config.py (excerpt)
 TICKER = "AAPL"
 WINDOW_SIZE = 30
-SPLIT_SIZE = 0.9
+TRAIN_SPLIT = 0.70
+VALIDATION_SPLIT = 0.85
+
+MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
+
+DEFAULTS_PARAMS = {
+    "epochs": 100,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "lstm_units": 64,
+    "dense_units": 128,
+    "dropout_rate": 0.5,
+    "clip_norm": 1.0,
+}
 
 HYPER_PARAMS = {
-    "epochs": [20, 30, 40],
     "batch_size": [32, 64],
     # "learning_rate": [0.01, 0.001, 0.0001],
     # "lstm_units": [32, 64, 128],
+    # "clip_norm": [0.5, 1.0, 2.0],
 }
 ```
 
@@ -232,17 +290,32 @@ be enforced at the full dependency-tree level via a lockfile.
 
 | Limitation | Notes |
 |---|---|
-| **Model selection uses the test set** | Hyperparameter configs are compared directly on `X_test`/`y_test`. A proper train/validation/test three-way split is needed to avoid optimistic RMSE bias. Scoped for Phase 2. |
-| **No MLflow experiment tracking** | `notebooks/` contains an earlier exploratory MLflow pass. Wiring it into `src/training/trainer.py` (logging params, metrics, and model artifacts per run) is the primary Phase 2 goal. |
-| **Predictor test requires trained artifacts** | `tests/test_predictor.py` loads real model and scaler files from `models/`, which are gitignored. A fresh clone without a prior training run will fail this test. Proper fix is mocking `load_model`/`joblib.load`; deferred for now. |
+| **Baseline hyperparameter search only** | Only `batch_size` swept in current implementation. Full Optuna-based sweep is Phase 2 scope. |
+| **Distribution shift on test set** | Model trained on 2010–2021 data performs significantly worse on 2024–2026 test data due to price regime change. Walk-forward validation and returns-based modelling are planned mitigations. |
+| **No retrain-on-90% workflow** | Standard practice is to retrain the best config on train+val combined after selection. Scoped for Phase 2. |
+| **MLflow Model Registry not yet used** | Model artifacts are logged per run but not registered in the MLflow Model Registry. Registration and versioned promotion workflow is Phase 2 scope. |
+| **Predictor test requires trained artifacts** | `tests/test_predictor.py` loads real model and scaler files from `models/`, which are gitignored. Proper fix is mocking `load_model`/`joblib.load`; deferred for now. |
 | **No multi-step forecasting** | The model predicts one day ahead. Multi-day forecasting via recursive window-sliding is a planned `Predictor` extension. |
 
 ---
 
 ## Phase 2 roadmap
 
-- [ ] MLflow experiment tracking wired into `src/training/trainer.py`
-- [ ] Train / validation / test three-way split
+### Hyperparameter search
+- [ ] Optuna integration with Random sampler, TPE sampler (Bayesian optimisation), and pruners for early stopping of bad trials
+- [ ] Walk-forward validation / time series cross-validation to replace single train/val split
+- [ ] Window size as a swept hyperparameter (each window size generates different data shape and its own MLflow run)
+
+### Training pipeline
+- [ ] Retrain best config on train+val combined (90%) after config selection
+- [ ] Train final production model on all available historical data
+- [ ] Returns-based modelling experiment to reduce distribution shift sensitivity
+
+### MLflow & model management
+- [ ] MLflow Model Registry — register, version, and promote best models
+- [ ] Prediction service using registered model URI instead of local file path
+- [ ] Mock-based tests for `Predictor` (no real artifacts required on fresh clone)
+
+### Deployment & monitoring
 - [ ] Cloud deployment (AWS/GCP) with Docker registry push
-- [ ] Prometheus + Grafana monitoring for prediction latency and drift
-- [ ] Mock-based tests for `Predictor` (no real artifacts required)
+- [ ] Prometheus + Grafana monitoring for prediction latency and data drift
