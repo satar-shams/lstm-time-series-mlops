@@ -6,6 +6,7 @@ from src.config import WINDOW_SIZE, TRAIN_SPLIT, VALIDATION_SPLIT
 from sklearn.preprocessing import StandardScaler
 from src.data.loader import StockLoader
 
+import os
 class TimeSeriesPreprocessor:
     def __init__(self,
                  windows_size:int = WINDOW_SIZE,
@@ -55,8 +56,10 @@ class TimeSeriesPreprocessor:
         )
         return X, y       
 
-    def save_scaler(self, path):
+    def save_scaler(self, path: str):
         joblib.dump(self.scaler, path)
+        print("\n✅ scaler saved in:")
+        print(path)
         
     def load_scaler(self, path):
         return joblib.load(path)

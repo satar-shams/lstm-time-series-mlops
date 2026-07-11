@@ -12,6 +12,9 @@ WINDOW_SIZE = 30
 TRAIN_SPLIT = 0.70
 VALIDATION_SPLIT = 0.85
 
+MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
+
 DEFAULTS_PARAMS = {
     "epochs": 100,
     "batch_size": 32,

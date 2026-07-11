@@ -24,6 +24,7 @@ models/*.pkl
 # MLflow local tracking store
 mlruns/
 mlartifacts/
+mlflow.db
 
 # Environment / secrets
 .env
