@@ -2,14 +2,14 @@
 
 A production-structured ML pipeline for forecasting AAPL stock prices using
 a stacked LSTM model. Built with a focus on engineering rigour: modular OOP
-design, config-driven hyperparameter sweeps, three-way train/val/test split,
-early stopping, adaptive learning rate scheduling, gradient clipping,
-MLflow experiment tracking, containerised serving, structured logging,
-input validation, and automated tests.
+design, Optuna hyperparameter search, MLflow experiment tracking, three-way
+train/val/test split, early stopping, adaptive learning rate scheduling,
+gradient clipping, containerised serving, structured logging, input
+validation, and automated tests.
 
-> **Status:** Phase 1 complete (`v1.0.0`). Phase 2 active on `dev` —
-> MLflow tracking is wired in; full hyperparameter search with Optuna,
-> walk-forward validation, and MLflow Model Registry are next.
+> **Status:** Phase 2 active on `dev`. Optuna search and MLflow tracking
+> are fully wired in. Walk-forward validation, MLflow Model Registry, and
+> cloud deployment are next.
 
 ---
 
@@ -25,7 +25,7 @@ lstm-time-series-mlops/
 │   ├── models/
 │   │   └── lstm_model.py          # LSTMForecaster — architecture only
 │   ├── training/
-│   │   └── trainer.py             # TimeSeriesTraining — grid search, callbacks, MLflow logging
+│   │   └── trainer.py             # TimeSeriesTraining — Optuna search, callbacks, MLflow logging
 │   └── inference/
 │       └── predictor.py           # Predictor — load model/scaler, predict, inverse-transform
 ├── app/
@@ -55,35 +55,49 @@ lstm-time-series-mlops/
 
 | Property | Value |
 |---|---|
-| Architecture | Input(30,1) → LSTM(64) → LSTM(64) → Dense(128, relu) → Dropout(0.5) → Dense(1) |
+| Architecture | Input(30,1) → LSTM(64) → LSTM(64) → Dense(128, relu) → Dropout(0.3) → Dense(1) |
 | Input | 30-day rolling window of adjusted closing price |
 | Target | Next-day closing price |
 | Split | 70% train / 15% validation / 15% test, chronological — no shuffling |
 | Scaler | `StandardScaler` fit on training data only (no leakage into val or test) |
-| Optimizer | Adam with `clipnorm=1.0` (gradient clipping for LSTM stability) |
+| Optimizer | Adam with gradient clipping (`clipnorm`) |
 | Callbacks | `EarlyStopping` (patience=10, restore\_best\_weights) + `ReduceLROnPlateau` (factor=0.5, patience=5) |
-| Hyperparameter search | Grid search via `itertools.product` over `config.HYPER_PARAMS` |
-| Model selection criterion | Validation RMSE% — test set never touched during selection |
+| Hyperparameter search | Optuna TPE sampler — each trial logged as a named MLflow run |
+| Model selection criterion | Validation RMSE% — test set never touched during search |
+| Final model training | Best config retrained on train+val combined (85%), evaluated on test |
 | Experiment tracking | MLflow with SQLite backend and dedicated artifact store |
 
 ---
 
 ## Results
 
-| Split | Period | RMSE% | Notes |
+| Stage | Period | RMSE% | Notes |
 |---|---|---|---|
-| Validation | 2021–2024 | ~3–4% | Used for model selection |
-| Test | 2024–2026 | ~14–17% | Held-out, touched once after selection |
+| Best trial (validation) | 2021–2024 | 2.84% | Trial 8 of 10 |
+| Final model (test) | 2024–2026 | 4.56% | Retrained on train+val, evaluated once |
 
-The gap between validation and test RMSE% is primarily attributable to
-**distribution shift**: the model was trained on 2010–2021 price data, while
-the test period (2024–2026) represents a structurally different price regime.
-The `StandardScaler` was fit on training data only, so test-period prices
-fall partially outside the scaler's fitted distribution.
+**Best hyperparameters found (10-trial exploratory run):**
 
-These results reflect a **baseline configuration** — only `batch_size` was
-swept during hyperparameter search, with all other parameters held at
-defaults. A full Optuna-based sweep is scoped for Phase 2.
+| Parameter | Value |
+|---|---|
+| `batch_size` | 32 |
+| `learning_rate` | 0.001 |
+| `lstm_units` | 64 |
+| `dense_units` | 128 |
+| `dropout_rate` | 0.3 |
+| `clip_norm` | 0.5 |
+| `epochs` (early stopped at) | 36 |
+
+The test RMSE% (4.56%) is substantially better than the baseline grid search
+result (14–17%) due to two factors: Optuna finding genuinely better
+hyperparameters (notably `dropout_rate=0.3` and `clip_norm=0.5` vs. defaults),
+and the final model being retrained on train+val combined (85% of data) rather
+than train only (70%). The remaining gap between validation and test is
+attributable to **distribution shift** — the 2024–2026 test period represents
+a structurally different price regime from the 2010–2021 training period.
+
+These results reflect a **10-trial exploratory run**. A full production sweep
+with more trials and walk-forward validation is scoped for the next phase.
 
 ---
 
@@ -94,6 +108,7 @@ defaults. A full Optuna-based sweep is scoped for Phase 2.
 | Model | TensorFlow 2.18.0 / Keras 3.15.0 |
 | Data | yfinance, pandas, NumPy |
 | Preprocessing | scikit-learn `StandardScaler` |
+| Hyperparameter search | Optuna 4.9.0 (TPE sampler) |
 | Experiment tracking | MLflow 3.14.0 (SQLite backend) |
 | Serving | FastAPI + Uvicorn |
 | Persistence | joblib (scaler), Keras native `.keras` format (model) |
@@ -133,11 +148,11 @@ The MLflow UI will be available at `http://127.0.0.1:5000`.
 python -m src.training.trainer
 ```
 
-Fetches AAPL data via yfinance, runs a hyperparameter grid search with early
-stopping and adaptive learning rate scheduling, logs every config as a
-separate MLflow run (params, metrics, model artifact for the winner),
-evaluates on the held-out test set, then saves the best model locally to
-`models/best_model.keras` and the fitted scaler to `models/scaler.bin`.
+Fetches AAPL data, runs an Optuna hyperparameter search where each trial is
+logged as a named MLflow run with params, val metrics, model artifact, and
+scaler artifact. After the study completes, the best config is loaded from
+MLflow, a final model is retrained on train+val combined, evaluated on the
+held-out test set, and logged as `final_model` in MLflow.
 
 ### 4. Run the API locally
 
@@ -213,8 +228,8 @@ Tests cover:
 
 All constants and default parameter values live in `src/config.py`.
 `DEFAULTS_PARAMS` is the single source of truth for all model and training
-defaults. `HYPER_PARAMS` defines which parameters are actively swept —
-comment/uncomment entries to control the search space.
+defaults. `HYPER_PARAMS` defines the Optuna search space — comment/uncomment
+entries to control which parameters are tuned vs. held at their default.
 
 ```python
 # src/config.py (excerpt)
@@ -222,6 +237,7 @@ TICKER = "AAPL"
 WINDOW_SIZE = 30
 TRAIN_SPLIT = 0.70
 VALIDATION_SPLIT = 0.85
+OPTUNA_TRIALS = 20
 
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
@@ -238,11 +254,17 @@ DEFAULTS_PARAMS = {
 
 HYPER_PARAMS = {
     "batch_size": [32, 64],
-    # "learning_rate": [0.01, 0.001, 0.0001],
-    # "lstm_units": [32, 64, 128],
-    # "clip_norm": [0.5, 1.0, 2.0],
+    "learning_rate": [0.01, 0.001, 0.0001],
+    "lstm_units": [32, 64, 128],
+    "dense_units": [64, 128, 256],
+    "dropout_rate": [0.3, 0.5, 0.7],
+    "clip_norm": [0.5, 1.0, 2.0, 5.0],
 }
 ```
+
+> Parameters removed from `HYPER_PARAMS` automatically fall back to their
+> value in `DEFAULTS_PARAMS`. Every parameter in `HYPER_PARAMS` must have
+> a corresponding entry in `DEFAULTS_PARAMS`.
 
 ---
 
@@ -290,10 +312,9 @@ be enforced at the full dependency-tree level via a lockfile.
 
 | Limitation | Notes |
 |---|---|
-| **Baseline hyperparameter search only** | Only `batch_size` swept in current implementation. Full Optuna-based sweep is Phase 2 scope. |
-| **Distribution shift on test set** | Model trained on 2010–2021 data performs significantly worse on 2024–2026 test data due to price regime change. Walk-forward validation and returns-based modelling are planned mitigations. |
-| **No retrain-on-90% workflow** | Standard practice is to retrain the best config on train+val combined after selection. Scoped for Phase 2. |
-| **MLflow Model Registry not yet used** | Model artifacts are logged per run but not registered in the MLflow Model Registry. Registration and versioned promotion workflow is Phase 2 scope. |
+| **Exploratory search only** | 10-trial Optuna run with categorical search space. Production-grade search requires more trials, `suggest_float`/`suggest_int` for continuous params, and Optuna pruners. |
+| **Distribution shift on test set** | Model trained on 2010–2021 data performs worse on 2024–2026 data due to price regime change. Walk-forward validation and returns-based modelling are planned mitigations. |
+| **MLflow Model Registry not yet used** | Model artifacts are logged per run but not registered or versioned in the MLflow Model Registry. |
 | **Predictor test requires trained artifacts** | `tests/test_predictor.py` loads real model and scaler files from `models/`, which are gitignored. Proper fix is mocking `load_model`/`joblib.load`; deferred for now. |
 | **No multi-step forecasting** | The model predicts one day ahead. Multi-day forecasting via recursive window-sliding is a planned `Predictor` extension. |
 
@@ -302,12 +323,12 @@ be enforced at the full dependency-tree level via a lockfile.
 ## Phase 2 roadmap
 
 ### Hyperparameter search
-- [ ] Optuna integration with Random sampler, TPE sampler (Bayesian optimisation), and pruners for early stopping of bad trials
-- [ ] Walk-forward validation / time series cross-validation to replace single train/val split
-- [ ] Window size as a swept hyperparameter (each window size generates different data shape and its own MLflow run)
+- [ ] Optuna `suggest_float` / `suggest_int` for continuous search spaces
+- [ ] Optuna pruners for early stopping of unpromising trials
+- [ ] Walk-forward validation / time series cross-validation
+- [ ] Window size as a swept hyperparameter
 
 ### Training pipeline
-- [ ] Retrain best config on train+val combined (90%) after config selection
 - [ ] Train final production model on all available historical data
 - [ ] Returns-based modelling experiment to reduce distribution shift sensitivity
 
