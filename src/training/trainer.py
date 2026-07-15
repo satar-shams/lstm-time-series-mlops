@@ -57,15 +57,7 @@ class TimeSeriesTraining:
             "mae": mae,
             "rmse": rmse,
             "rmse_percent": rmse_percent
-        }    
-    
-    def update_best_model(self, metrics:dict[str, float])-> bool:        
-        if metrics["rmse_percent"] < self.best_rmse_percent:
-            self.best_rmse_percent = metrics["rmse_percent"]
-            self.best_rmse = metrics["rmse"]
-            self.best_mae = metrics["mae"]
-            return True
-        else: return False
+        }
 
     def create_callbacks(self)-> list[Callback]:
         early_stopping = EarlyStopping(
@@ -83,31 +75,9 @@ class TimeSeriesTraining:
         )
         return [early_stopping, reduce_lr]
 
-    def show_validation_metrics(self, metrics:dict[str, float]):
-        print("\n==============================")
-        print("Validation Metrics")
-        print("==============================")
-        print(f"MAE: {metrics['mae']:.4f}")
-        print(f"RMSE: {metrics['rmse']:.4f}")
-        print(f"RMSE %: {metrics['rmse_percent']:.2f}%")
-        print("==============================")
-    
-    def show_test_evaluation(self):
-        metrics  = self.evaluate_dataset(self.best_model, self.data["X_test"], self.data["y_test_real"])
-        print("\n==============================")
-        print("Final Test Metrics")
-        print("==============================")
-        print("Best configuration:", self.best_config)
-        print(f"MAE: {metrics['mae']:.4f}")
-        print(f"RMSE: {metrics['rmse']:.4f}")
-        print(f"RMSE %: {metrics['rmse_percent']:.2f}%")
-        print("==============================")
-
-    def save_best_model(self):
-        if self.best_model is None:
-            raise RuntimeError("No model was selected — training may have failed for all configs.")        
+    def save_model_locally(self, model):
         os.makedirs("models", exist_ok=True)
-        self.best_model.save("models/best_model.keras")
+        model.save("models/best_model.keras")
         print("\n✅ Best model saved in:")
         print("models/best_model.keras\n")
 
@@ -125,35 +95,32 @@ class TimeSeriesTraining:
 
         print()
 
-    def load_best_config_from_mlflow(
-        self,
-        trial_number: int,
-    ) -> dict:
+    def load_best_config_from_mlflow(self) -> tuple[dict[str, float | int], str]:
 
         runs = mlflow.search_runs(
             experiment_names=[MLFLOW_EXPERIMENT_NAME],
-            filter_string=f"params.trial_number = '{trial_number}'",
+            filter_string="attributes.run_name LIKE 'trial_%'",
+            order_by=["metrics.val_rmse_percent ASC"],
+            max_results=1,
         )
 
         if runs.empty:
             raise RuntimeError(
-                f"No MLflow run found for trial {trial_number}."
+                "No Optuna trial runs found in MLflow."
             )
 
-        run = runs.iloc[0]
+        best_run = runs.iloc[0]
 
         cfg = {}
 
         for key, default_value in DEFAULTS_PARAMS.items():
-
-            value = run[f"params.{key}"]
-
+            value = best_run[f"params.{key}"]
             cfg[key] = type(default_value)(value)
-        
-        # Use the best epoch found during Optuna for the final training.
-        cfg["epochs"] = int(run["metrics.best_epoch"])
 
-        return cfg
+        # Use the best epoch found during Optuna for the final training.
+        cfg["epochs"] = int(best_run["metrics.best_epoch"])
+
+        return cfg, best_run["run_id"]
 
     def objective(self, trial):
         with mlflow.start_run(
@@ -218,35 +185,13 @@ class TimeSeriesTraining:
             best_epoch = early_stopping.best_epoch + 1
             stopped_epoch = len(history.history["loss"])
 
-            if metrics["rmse_percent"] < self.best_rmse_percent:
-                self.best_rmse_percent = metrics["rmse_percent"]
-                self.best_epoch = best_epoch
-
             mlflow.log_metric("best_epoch", best_epoch)
             mlflow.log_metric("stopped_epoch", stopped_epoch)
 
             for key, value in metrics.items():
                 mlflow.log_metric(f"val_{key}", value)
-
-            signature = ModelSignature(
-                inputs=Schema([
-                    TensorSpec(np.dtype("float32"), (-1, WINDOW_SIZE, 1))
-                ]),
-                outputs=Schema([
-                    TensorSpec(np.dtype("float32"), (-1, 1))
-                ]),
-            )
-
-            model_info = mlflow.tensorflow.log_model(
-                model=model,
-                name="lstm",
-                signature=signature,
-            )
-
-            mlflow.log_artifact(
-                "models/scaler.bin",
-                artifact_path="scaler",
-            )
+            
+            self.log_model_and_scaler(model)
 
             return metrics["rmse_percent"]
 
@@ -268,7 +213,7 @@ class TimeSeriesTraining:
             metrics=[keras.metrics.RootMeanSquaredError()],
         )
         
-        history = model.fit(
+        model.fit(
             X, 
             y,
             epochs=cfg["epochs"], 
@@ -276,39 +221,39 @@ class TimeSeriesTraining:
             verbose=0,
         )
 
-        return model, history
-
-    def train_model(self):
+        return model
+    
+    def prepare_training(self):
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-        # mlflow.tensorflow.autolog(disable=True)
         mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
         self.data = self.load_preprocessing_data() # we can assign window for future purposes
         os.makedirs("models", exist_ok=True)
         self.preprocess.save_scaler("models/scaler.bin")
 
-        self.print_default_values()        
-        
+        self.print_default_values()
+
+    def optimize_hyperparameters(self):
         study = optuna.create_study(
             direction="minimize",
         )
-        self.best_rmse_percent = float("inf")
-        self.best_epoch = 50
 
         study.optimize(
             self.objective,
             n_trials=OPTUNA_TRIALS,
         )
 
-        print("\nBest trial:")
+        return study
+    
+    def show_best_trial(self, study):
         print("\nBest trial")
         print(f"Trial: {study.best_trial.number}")
         print(f"Validation RMSE %: {study.best_trial.value:.4f}")
-
         print("\nBest parameters:")
         for key, value in study.best_trial.params.items():
             print(f"  {key}: {value}")
-        
+
+    def retrain_best_model(self):
         X_train_final = np.concatenate(
             [self.data["X_train"], self.data["X_val"]],
             axis=0,
@@ -319,15 +264,17 @@ class TimeSeriesTraining:
             axis=0,
         )
 
-        cfg = self.load_best_config_from_mlflow(
-                study.best_trial.number
-            )
-        
+        cfg, best_run_id = self.load_best_config_from_mlflow()
         print("\nLoaded config from MLflow:", cfg)
+        print("best trial number: ",best_run_id)
 
-        model, history = self.train_single_model(cfg= cfg,
+        model = self.train_single_model(cfg= cfg,
                                                  X= X_train_final,
                                                  y= y_train_final)
+        return model, cfg, best_run_id
+
+    def evaluate_final_model(self, model):
+
         metrics = self.evaluate_dataset(
             model,
             self.data["X_test"],
@@ -337,9 +284,48 @@ class TimeSeriesTraining:
         print("\nFinal Test Metrics")
         print(metrics)
 
+        return metrics
+
+    def log_model_and_scaler(
+        self,
+        model,
+    ):
+        signature = ModelSignature(
+            inputs=Schema([
+                TensorSpec(np.dtype("float32"), (-1, WINDOW_SIZE, 1))
+            ]),
+            outputs=Schema([
+                TensorSpec(np.dtype("float32"), (-1, 1))
+            ]),
+        )
+
+        mlflow.tensorflow.log_model(
+            model=model,
+            name="lstm",
+            signature=signature,
+        )
+
+        mlflow.log_artifact(
+            "models/scaler.bin",
+            artifact_path="scaler",
+        )    
+
+    def log_final_model(
+        self,
+        model,
+        cfg,
+        metrics,
+        study,
+        best_run_id,
+    ):
         with mlflow.start_run(run_name="final_model"):
-            mlflow.log_param("optuna_trial", study.best_trial.number)
+            mlflow.log_param("source_trial_number", study.best_trial.number)
             mlflow.log_param("training_dataset", "train+validation")
+
+            mlflow.log_param(
+                "source_trial_run_id",
+                best_run_id,
+            )            
 
             for key, value in cfg.items():
                 mlflow.log_param(key, value)
@@ -352,28 +338,31 @@ class TimeSeriesTraining:
                 study.best_trial.value,
             )
             
-            signature = ModelSignature(
-                inputs=Schema([
-                    TensorSpec(np.dtype("float32"), (-1, WINDOW_SIZE, 1))
-                ]),
-                outputs=Schema([
-                    TensorSpec(np.dtype("float32"), (-1, 1))
-                ]),
-            )
-
-            mlflow.tensorflow.log_model(
-                model=model,
-                name="lstm",
-                signature=signature,
-            )
-
-            mlflow.log_artifact(
-                "models/scaler.bin",
-                artifact_path="scaler",
-            )
-
+            self.log_model_and_scaler(model)
     
+    def run(self):
+
+        self.prepare_training()
+
+        study = self.optimize_hyperparameters()
+
+        self.show_best_trial(study)
+
+        model, cfg, best_run_id = self.retrain_best_model()
+
+        self.save_model_locally(model)
+
+        metrics = self.evaluate_final_model(model)
+
+        self.log_final_model(
+            model,
+            cfg,
+            metrics,
+            study,
+            best_run_id,
+        )
+
 if __name__ == "__main__":
     model = TimeSeriesTraining()
-    model.train_model()
+    model.run()
  

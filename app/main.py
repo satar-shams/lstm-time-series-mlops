@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 from app.core.logger import logger
 from src.config import APP_HOST, APP_PORT, TICKER, MODEL_PATH, SCALER_PATH
+
+from app.example import PREDICT_EXAMPLE
 
 from src.inference.predictor import Predictor
 predictor = Predictor(model_path= MODEL_PATH, scaler_path= SCALER_PATH ) 
@@ -10,7 +12,10 @@ predictor = Predictor(model_path= MODEL_PATH, scaler_path= SCALER_PATH )
 app = FastAPI(title=f"LSTM {TICKER} Forecaster", version="1.0")
 
 class PredictRequest(BaseModel):
-    data: list[float]
+    data: list[float] = Field(
+        ...,
+        examples=[PREDICT_EXAMPLE],
+    )
 
 @app.get("/")
 def root():
