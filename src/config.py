@@ -7,7 +7,7 @@ SCALER_PATH = "models/scaler.bin"
 TICKER = "AAPL"
 START_DATE = "2010-01-01"
 END_DATE = "2026-06-26"
-WINDOW_SIZE = 30
+WINDOW_SIZE = 2
 
 TRAIN_SPLIT = 0.70
 VALIDATION_SPLIT = 0.85
@@ -15,7 +15,8 @@ VALIDATION_SPLIT = 0.85
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
 
-OPTUNA_TRIALS = 10
+OPTUNA_TRIALS = 2
+SEED = 42
 
 # Every hyperparameter must have a corresponding default value.
 # To stop tuning a parameter, remove it from HYPER_PARAMS but keep its default value.
