@@ -1,6 +1,6 @@
 from src.config import HYPER_PARAMS, DEFAULTS_PARAMS 
 from src.config import WINDOW_SIZE, OPTUNA_TRIALS
-from src.config import MLFLOW_EXPERIMENT_NAME, MLFLOW_TRACKING_URI
+from src.config import MLFLOW_EXPERIMENT_NAME, MLFLOW_TRACKING_URI,MLFLOW_MODEL_NAME
 
 from src.data.loader import StockLoader
 from src.data.preprocessor import TimeSeriesPreprocessor
@@ -14,6 +14,8 @@ from src.training.evaluator import LSTMEvaluator
 from src.training.mlflow_manager import MLFlowManager
 from src.training.optuna_tuner import LSTMOptuna
 from src.training.single_model_trainer import SingleModelTrainer
+from src.training.summary import TrainingSummary
+from src.training.model_registry import ModelRegistry
 
 from optuna.study import Study
 
@@ -24,6 +26,8 @@ class TimeSeriesTraining:
         self.mlflow_manager = MLFlowManager()
         self.optuna_tuner = LSTMOptuna()
         self.trainer = SingleModelTrainer()
+        self.summary = TrainingSummary()
+        self.registry = ModelRegistry()
          
     # for future training purpose, when we need to change windows, therefore we need new shape of data
     def load_preprocessing_data(self, window_size:int = WINDOW_SIZE) -> dict[str, np.ndarray]:
@@ -39,58 +43,6 @@ class TimeSeriesTraining:
         print("\n✅ Best model saved in:")
         print("models/best_model.keras\n")
 
-    def print_section(self, title: str) -> None:
-        print("\n" + "=" * 60)
-        print(title)
-        print("=" * 60)
-
-    def print_default_values(self)->None:
-        print("\nDefault parameters:")
-
-        no_default = True
-        for key, default_value in DEFAULTS_PARAMS.items():
-            if key not in HYPER_PARAMS:
-                print(f"  {key} = {default_value}")
-                no_default = False
-
-        if no_default:
-            print("  None (all parameters are being tuned)")
-
-        print()
-
-    def print_training_summary(
-        self,
-        study: Study,
-        cfg: dict[str, int | float],
-        metrics: dict[str, float],
-        best_run_id: str,
-    ) -> None:
-
-        print("\n" + "=" * 60)
-        print("Training Summary")
-        print("=" * 60)
-
-        print(f"Best Trial            : {study.best_trial.number}")
-        print(f"Validation RMSE (%)   : {study.best_trial.value:.4f}")
-        print(f"Final Test RMSE (%)   : {metrics['rmse_percent']:.4f}")
-        print(
-            f"Generalization Gap    : "
-            f"{metrics['rmse_percent'] - study.best_trial.value:+.4f}"
-        )
-
-        print("\nArtifacts")
-        print("-" * 60)
-        print("Model                 : models/best_model.keras")
-        print("Scaler                : models/scaler.bin")
-
-        print("\nMLflow")
-        print("-" * 60)
-        print(f"Best Trial Run ID     : {best_run_id}")
-
-        print("=" * 60)
-        print("Training Completed Successfully")
-        print("=" * 60)
-    
     def prepare_training(self):
         set_random_seed()
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -100,43 +52,20 @@ class TimeSeriesTraining:
         os.makedirs("models", exist_ok=True)
         self.preprocess.save_scaler("models/scaler.bin")
 
-        self.print_default_values()
+        self.summary.default_values(DEFAULTS_PARAMS=DEFAULTS_PARAMS, HYPER_PARAMS=HYPER_PARAMS)
 
-    def show_best_trial(self, study: Study) -> None:
-        print("\nBest Trial")
-        print("-" * 40)
-        print(f"Trial Number         : {study.best_trial.number}")
-        print(f"Validation RMSE (%)  : {study.best_trial.value:.4f}")
+    def get_best_trial_config(self, study: Study):
+        best_trial = study.best_trial
+        cfg = best_trial.params.copy()
+        cfg["epochs"] = best_trial.user_attrs["epochs"]
 
-        print("\nHyperparameters")
-        print("-" * 40)
-        for key, value in study.best_trial.params.items():
-            print(f"{key:<20}: {value}")
+        best_run_id = best_trial.user_attrs["run_id"]
+        print("\nLoaded Best Trial Configuration:", cfg)
+        print("Best Trial Run ID: ",best_run_id)
 
-    def retrain_best_model(self):
-        X_train_final = np.concatenate(
-            [self.data["X_train"], self.data["X_val"]],
-            axis=0,
-        )
+        return cfg, best_run_id
 
-        y_train_final = np.concatenate(
-            [self.data["y_train"], self.data["y_val"]],
-            axis=0,
-        )
-
-        cfg, best_run_id = self.mlflow_manager.load_best_config_from_mlflow(
-            DEFAULTS_PARAMS= DEFAULTS_PARAMS, 
-            MLFLOW_EXPERIMENT_NAME= MLFLOW_EXPERIMENT_NAME
-        )
-        
-        print("\nLoaded config from MLflow:", cfg)
-        print("best trial number: ",best_run_id)
-        
-        model, _ = self.trainer.train(cfg= cfg, X= X_train_final, y= y_train_final)
-        
-        return model, cfg, best_run_id
-
-    def evaluate_final_model(self, model):
+    def evaluate_model(self, model):
 
         metrics = self.evaluator.evaluate_dataset(
             model,
@@ -153,7 +82,7 @@ class TimeSeriesTraining:
 
         return metrics
 
-    def log_final_model(
+    def log_candidate_model(
         self,
         model,
         cfg,
@@ -161,7 +90,7 @@ class TimeSeriesTraining:
         study,
         best_run_id,
     ):
-        with mlflow.start_run(run_name="final_model"):
+        with mlflow.start_run(run_name="final_model") as run:
             self.mlflow_manager.log_param("source_trial_number", study.best_trial.number)
             self.mlflow_manager.log_param("training_dataset", "train+validation")
             self.mlflow_manager.log_param("source_trial_run_id", best_run_id)            
@@ -170,12 +99,13 @@ class TimeSeriesTraining:
             self.mlflow_manager.log_metric("best_validation_rmse_percent", study.best_trial.value)            
             self.mlflow_manager.log_model(model, WINDOW_SIZE)
             self.mlflow_manager.log_scaler()
+            return run.info.run_id
     
     def run(self):
-        self.print_section("Preparing Training")
+        self.summary.print_section("Preparing Training")
         self.prepare_training()
 
-        self.print_section("Hyperparameter Optimization")
+        self.summary.print_section("Hyperparameter Optimization")
         print(f"Number of trials : {OPTUNA_TRIALS}")
         print("Direction        : minimize (Validation RMSE %)\n")
         study = self.optuna_tuner.optimize_hyperparameters(data= self.data,
@@ -185,30 +115,56 @@ class TimeSeriesTraining:
                                                            scaler= self.preprocess.scaler,
                                                            window_size= WINDOW_SIZE)
 
-        self.show_best_trial(study)
+        self.summary.best_trial(study)
 
-        self.print_section("Retraining Best Model")
-        model, cfg, best_run_id = self.retrain_best_model()
+        X_candidate = np.concatenate([self.data["X_train"], self.data["X_val"]], axis=0,)
+        y_candidate = np.concatenate([self.data["y_train"], self.data["y_val"]], axis=0,)
 
-        self.save_model_locally(model)
+        # Test data is included here deliberately — evaluation against it already
+        # happened (see evaluate_model above). This is the final production model,
+        # trained on all available history, with no further held-out evaluation.
+        X_production = np.concatenate([X_candidate, self.data["X_test"]], axis=0,)
+        y_production = np.concatenate([y_candidate, self.data["y_test"]], axis=0,)
+        
+        cfg, best_run_id = self.get_best_trial_config(study)
 
-        self.print_section("Final Evaluation")
-        metrics = self.evaluate_final_model(model)
-
-        self.log_final_model(
-            model,
+        self.summary.print_section("Training Candidate Model (Train + Validation)")
+        candidate_model, _ = self.trainer.train(cfg= cfg, X= X_candidate, y= y_candidate)
+        metrics = self.evaluate_model(candidate_model)
+        
+        candidate_run_id  = self.log_candidate_model(
+            candidate_model,
             cfg,
             metrics,
             study,
             best_run_id,
         )
+        
+        version = self.registry.register_model(
+            run_id=candidate_run_id,
+            model_name=MLFLOW_MODEL_NAME,
+        )
 
-        self.print_training_summary(
+        self.registry.set_alias(
+            model_name=MLFLOW_MODEL_NAME,
+            version=version,
+            alias="staging",
+        )
+
+        self.summary.final_summary(
             study,
-            cfg,
             metrics,
             best_run_id,
+            version,
         )
+
+        self.summary.print_section("Training Production Model (All Data)    ")
+        production_model, _ = self.trainer.train(
+            cfg=cfg,
+            X=X_production,
+            y=y_production,
+        )
+        self.save_model_locally(production_model)
 
 if __name__ == "__main__":
     model = TimeSeriesTraining()

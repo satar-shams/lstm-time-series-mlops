@@ -60,16 +60,17 @@ class LSTMOptuna:
                 if isinstance(cb, EarlyStopping)
             )  
     
-    def _log_trial_results(self, best_epoch: int, stopped_epoch:int, metrics: dict[str, float], model) -> None:
+    def _log_trial_results(self, best_epoch: int, stopped_epoch:int, metrics: dict[str, float], test_metrics: dict[str, float],  model) -> None:
             self.mlflow_manager.log_metric("best_epoch", best_epoch)
             self.mlflow_manager.log_metric("stopped_epoch", stopped_epoch)
             self.mlflow_manager.log_metrics(metrics, "val")
+            self.mlflow_manager.log_metrics(test_metrics, "test")
             self.mlflow_manager.log_model(model, self.WINDOW_SIZE) # later hyper parameter window size
   
     def objective(self, trial: Trial) -> float:
         with mlflow.start_run(
             run_name=f"trial_{trial.number:03d}"
-        ):
+        ) as run:
             cfg = self._build_trial_config(trial)
             self._log_trial_setup(trial, cfg)
             callbacks = create_callbacks()
@@ -87,10 +88,20 @@ class LSTMOptuna:
                 self.data["X_val"],
                 self.data["y_val_real"],
             )
+            test_metrics = self.evaluator.evaluate_dataset(
+                model,
+                self.scaler,
+                self.data["X_test"],
+                self.data["y_test_real"],
+            )
+            print("test_metrics")
+            print(test_metrics)
 
             early_stopping = self._get_early_stopping(callbacks)
             best_epoch = early_stopping.best_epoch + 1
+            trial.set_user_attr("epochs", best_epoch)
+            trial.set_user_attr("run_id", run.info.run_id)
             stopped_epoch = len(history.history["loss"])
-            self._log_trial_results(best_epoch, stopped_epoch, metrics, model)
+            self._log_trial_results(best_epoch, stopped_epoch, metrics, test_metrics, model)
 
             return metrics["rmse_percent"]
