@@ -148,7 +148,7 @@ class TimeSeriesTraining:
         self.registry.set_alias(
             model_name=MLFLOW_MODEL_NAME,
             version=version,
-            alias="staging",
+            alias="production",
         )
 
         self.summary.final_summary(

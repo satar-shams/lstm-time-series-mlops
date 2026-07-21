@@ -15,7 +15,7 @@ VALIDATION_SPLIT = 0.95
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
 
-OPTUNA_TRIALS = 3
+OPTUNA_TRIALS = 25
 SEED = 42
 
 # Every hyperparameter must have a corresponding default value.

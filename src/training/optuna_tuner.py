@@ -103,5 +103,7 @@ class LSTMOptuna:
             trial.set_user_attr("run_id", run.info.run_id)
             stopped_epoch = len(history.history["loss"])
             self._log_trial_results(best_epoch, stopped_epoch, metrics, test_metrics, model)
+            
+            trial.set_user_attr("test_rmse_percent", test_metrics["rmse_percent"])
 
             return metrics["rmse_percent"]

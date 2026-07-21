@@ -44,13 +44,29 @@ class TrainingSummary:
         print("\n" + "=" * 60)
         print("Training Summary")
         print("=" * 60)
+        
+        best_trial = study.best_trial
 
-        print(f"Best Trial            : {study.best_trial.number}")
-        print(f"Optimization RMSE (%) : {study.best_trial.value:.4f}")
-        print(f"Final Test RMSE (%)   : {metrics['rmse_percent']:.4f}")
+        print(f"Best Trial              : {best_trial.number}")
         print(
-            f"Generalization Gap    : "
-            f"{metrics['rmse_percent'] - study.best_trial.value:+.4f}"
+            f"Optimization RMSE (%)   : "
+            f"{best_trial.value:.4f}   "
+            f"(validation — used for selection)"
+        )
+        print(
+            f"Trial Test RMSE (%)     : "
+            f"{best_trial.user_attrs['test_rmse_percent']:.4f}   "
+            f"(best trial's own test score, diagnostic only)"
+        )
+        print(
+            f"Final Test RMSE (%)     : "
+            f"{metrics['rmse_percent']:.4f}   "
+            f"(candidate model, retrained on train+val)"
+        )
+        print(
+            f"Generalization Gap      : "
+            f"{metrics['rmse_percent'] - best_trial.value:+.4f}   "
+            f"(Final Test − Optimization RMSE)"
         )
 
         print("\nFinal Evaluation")
