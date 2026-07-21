@@ -38,5 +38,7 @@ if __name__ == "__main__":
     stock_loader = StockLoader()
     
     dataset = stock_loader.fetch()
-    print(dataset.head())
     print(type(dataset))
+
+    values = dataset["Close"].tail(30).tolist()
+    print(values)

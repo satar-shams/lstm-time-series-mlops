@@ -2,14 +2,15 @@
 
 A production-structured ML pipeline for forecasting AAPL stock prices using
 a stacked LSTM model. Built with a focus on engineering rigour: modular OOP
-design, Optuna hyperparameter search, MLflow experiment tracking, three-way
-train/val/test split, early stopping, adaptive learning rate scheduling,
-gradient clipping, containerised serving, structured logging, input
-validation, and automated tests.
+design, Optuna hyperparameter search, MLflow experiment tracking and Model
+Registry, three-way train/val/test split, early stopping, adaptive learning
+rate scheduling, gradient clipping, reproducible training via fixed seeding,
+containerised serving, structured logging, input validation, and automated
+tests.
 
-> **Status:** Phase 2 active on `dev`. Optuna search and MLflow tracking
-> are fully wired in. Walk-forward validation, MLflow Model Registry, and
-> cloud deployment are next.
+> **Status:** Phase 2 milestone (`v1.3.0`). Optuna search, MLflow tracking,
+> and alias-based Model Registry are fully wired in. Walk-forward validation
+> and cloud deployment are next.
 
 ---
 
@@ -23,13 +24,22 @@ lstm-time-series-mlops/
 │   │   ├── loader.py              # StockLoader — yfinance fetch + validation
 │   │   └── preprocessor.py        # TimeSeriesPreprocessor — scaling, windowing, three-way split
 │   ├── models/
-│   │   └── lstm_model.py          # LSTMForecaster — architecture only
+│   │   └── lstm_model.py          # LSTMForecaster — architecture + compilation
 │   ├── training/
-│   │   └── trainer.py             # TimeSeriesTraining — Optuna search, callbacks, MLflow logging
+│   │   ├── trainer.py             # TimeSeriesTraining — orchestrates the full pipeline
+│   │   ├── optuna_tuner.py        # LSTMOptuna — hyperparameter search, per-trial MLflow logging
+│   │   ├── single_model_trainer.py # SingleModelTrainer — trains one model for a given config
+│   │   ├── evaluator.py           # LSTMEvaluator — real-price MAE/RMSE/RMSE%
+│   │   ├── mlflow_manager.py      # MLFlowManager — param/metric/model/artifact logging
+│   │   ├── model_registry.py      # ModelRegistry — registration and alias-based versioning
+│   │   ├── callbacks.py           # EarlyStopping + ReduceLROnPlateau factory
+│   │   ├── summary.py             # TrainingSummary — structured console output
+│   │   └── utils.py               # set_random_seed() — reproducibility across runs
 │   └── inference/
 │       └── predictor.py           # Predictor — load model/scaler, predict, inverse-transform
 ├── app/
 │   ├── main.py                    # FastAPI application
+│   ├── example.py                 # Sample prediction payload for Swagger UI
 │   └── core/
 │       └── logger.py              # Structured JSON logger
 ├── tests/
@@ -55,49 +65,97 @@ lstm-time-series-mlops/
 
 | Property | Value |
 |---|---|
-| Architecture | Input(30,1) → LSTM(64) → LSTM(64) → Dense(128, relu) → Dropout(0.3) → Dense(1) |
+| Architecture | Input(30,1) → LSTM → LSTM → Dense(relu) → Dropout → Dense(1) — units tuned by Optuna |
 | Input | 30-day rolling window of adjusted closing price |
 | Target | Next-day closing price |
-| Split | 70% train / 15% validation / 15% test, chronological — no shuffling |
+| Split | 90% train / 5% validation / 5% test, chronological — no shuffling |
 | Scaler | `StandardScaler` fit on training data only (no leakage into val or test) |
-| Optimizer | Adam with gradient clipping (`clipnorm`) |
+| Optimizer | Adam with gradient clipping (`clipnorm`, tuned) |
 | Callbacks | `EarlyStopping` (patience=10, restore\_best\_weights) + `ReduceLROnPlateau` (factor=0.5, patience=5) |
-| Hyperparameter search | Optuna TPE sampler — each trial logged as a named MLflow run |
-| Model selection criterion | Validation RMSE% — test set never touched during search |
-| Final model training | Best config retrained on train+val combined (85%), evaluated on test |
-| Experiment tracking | MLflow with SQLite backend and dedicated artifact store |
+| Hyperparameter search | Optuna TPE sampler, 25 trials — each logged as a named MLflow run |
+| Model selection criterion | Validation RMSE% — **test set is never used for search or selection** |
+| Training pipeline | Three tiers: search (train, eval on val) → candidate (train+val, eval on test) → production (all data) |
+| Reproducibility | Fixed seed + `tf.config.experimental.enable_op_determinism()` |
+| Model management | MLflow Model Registry, alias-based versioning (no deprecated stage API) |
 
 ---
 
 ## Results
 
-| Stage | Period | RMSE% | Notes |
-|---|---|---|---|
-| Best trial (validation) | 2021–2024 | 2.84% | Trial 8 of 10 |
-| Final model (test) | 2024–2026 | 4.56% | Retrained on train+val, evaluated once |
+**Full 25-trial search:**
 
-**Best hyperparameters found (10-trial exploratory run):**
+| Metric | Value | Meaning |
+|---|---|---|
+| Optimization RMSE% (validation) | 1.94% | Used for trial selection — trial 22 |
+| Trial's own test RMSE% | 1.52% | Diagnostic only, not used for selection or reported as the final result |
+| Final test RMSE% (candidate model) | 3.11% | Retrained on train+val, evaluated once — this is the honest result |
+| **Generalization gap** | **+1.17%** | Final test RMSE% − optimization RMSE% |
+
+**Best hyperparameters found:**
 
 | Parameter | Value |
 |---|---|
 | `batch_size` | 32 |
 | `learning_rate` | 0.001 |
-| `lstm_units` | 64 |
-| `dense_units` | 128 |
+| `lstm_units` | 128 |
+| `dense_units` | 256 |
 | `dropout_rate` | 0.3 |
-| `clip_norm` | 0.5 |
-| `epochs` (early stopped at) | 36 |
+| `clip_norm` | 5.0 |
+| `epochs` (early stopped at) | 30 |
 
-The test RMSE% (4.56%) is substantially better than the baseline grid search
-result (14–17%) due to two factors: Optuna finding genuinely better
-hyperparameters (notably `dropout_rate=0.3` and `clip_norm=0.5` vs. defaults),
-and the final model being retrained on train+val combined (85% of data) rather
-than train only (70%). The remaining gap between validation and test is
-attributable to **distribution shift** — the 2024–2026 test period represents
-a structurally different price regime from the 2010–2021 training period.
+The production model is subsequently retrained on **all available data**
+(train + val + test) using this configuration, since no further held-out
+evaluation is needed once the honest test score above has been reported.
 
-These results reflect a **10-trial exploratory run**. A full production sweep
-with more trials and walk-forward validation is scoped for the next phase.
+### A note on the two test RMSE% numbers
+
+Two different test-set numbers appear in training output, and only one of
+them should be trusted as the reported result. Each Optuna trial's own
+model — trained with early stopping/LR scheduling active, on train data
+only — is evaluated on the test set purely for diagnostic visibility, and
+that score is logged per trial. It is **not** used to select the winning
+trial (selection uses validation RMSE% only) and it is noisy: across
+different trials in the same search, this per-trial test score sometimes
+lands above validation RMSE% and sometimes below it, which is expected
+variance from a single train/early-stop run rather than a meaningful
+signal on its own.
+
+The number reported as "Final Test RMSE%" is different and is the one
+that matters: it comes from the **candidate model**, retrained from
+scratch on train+val combined, using a fixed epoch count (the winning
+trial's `best_epoch`, not early stopping), then evaluated on the test set
+exactly once. This is the only test-set number used anywhere in this
+pipeline for reporting or decision-making, and it is what the
+generalization gap above is computed from.
+
+### Investigation: closing the validation-test gap
+
+An earlier version of this pipeline used a 70/15/15 split and saw
+**generalization gaps as large as +19.86%** between validation and test
+RMSE% — a config that looked excellent during search performed far worse
+on held-out data. Two hypotheses were tested in order, not assumed:
+
+1. **Callback state loss during retraining.** The candidate model is
+   retrained from scratch after search, using only the winning
+   hyperparameters — but Optuna's `EarlyStopping`/`ReduceLROnPlateau`
+   also shape the training process (best epoch, LR schedule). To test
+   whether this mattered, the original per-trial model (with callbacks)
+   was compared directly against the retrained model (fixed epoch count,
+   no callbacks) on the same test set. The gap between them was small
+   (7.48% vs. 6.26%), ruling this out as the primary cause.
+2. **Insufficient training data.** With only 70% of ~4,000 trading days
+   available for training, the model had comparatively little history to
+   learn from. Changing the split to 90% train / 5% val / 5% test gave the
+   model substantially more data while still preserving genuinely held-out
+   evaluation. This produced a dramatic improvement: the generalization
+   gap fell from +19.86% to +0.89% in initial testing, and +1.17% in the
+   full 25-trial run reported above.
+
+This investigation is a deliberate example of testing one variable at a
+time before changing another — worth noting since a smaller test set (5%
+of history, roughly 200 trading days) also means a noisier, less certain
+estimate of generalization than the earlier 15% test set. The improvement
+is real but should be read in that context, not as a fully closed question.
 
 ---
 
@@ -109,7 +167,7 @@ with more trials and walk-forward validation is scoped for the next phase.
 | Data | yfinance, pandas, NumPy |
 | Preprocessing | scikit-learn `StandardScaler` |
 | Hyperparameter search | Optuna 4.9.0 (TPE sampler) |
-| Experiment tracking | MLflow 3.14.0 (SQLite backend) |
+| Experiment tracking | MLflow 3.14.0 (SQLite backend, Model Registry) |
 | Serving | FastAPI + Uvicorn |
 | Persistence | joblib (scaler), Keras native `.keras` format (model) |
 | Containerisation | Docker (python:3.12-slim) |
@@ -131,8 +189,7 @@ pip install -r requirements.lock
 
 ### 2. Start the MLflow server
 
-Run this in a **separate terminal** before training. MLflow must be running
-for experiment tracking to work.
+Run this in a **separate terminal** before training.
 
 ```bash
 mlflow server \
@@ -140,7 +197,8 @@ mlflow server \
     --default-artifact-root file:./mlartifacts
 ```
 
-The MLflow UI will be available at `http://127.0.0.1:5000`.
+The MLflow UI (including the Model Registry) is available at
+`http://127.0.0.1:5000`.
 
 ### 3. Train the model
 
@@ -148,11 +206,13 @@ The MLflow UI will be available at `http://127.0.0.1:5000`.
 python -m src.training.trainer
 ```
 
-Fetches AAPL data, runs an Optuna hyperparameter search where each trial is
-logged as a named MLflow run with params, val metrics, model artifact, and
-scaler artifact. After the study completes, the best config is loaded from
-MLflow, a final model is retrained on train+val combined, evaluated on the
-held-out test set, and logged as `final_model` in MLflow.
+This runs the full pipeline: fetches AAPL data, runs an Optuna search
+(each trial logged as an MLflow run with params, validation and test
+metrics, model and scaler artifacts), retrains the best config on
+train+val as a candidate model, evaluates it honestly on the held-out
+test set, registers it in the MLflow Model Registry under the alias
+`production`, then retrains a final production model on all available
+data and saves it locally.
 
 ### 4. Run the API locally
 
@@ -194,6 +254,8 @@ Sending the wrong number returns a clear `422` error:
 {"detail": "Expected 30 values, got 29"}
 ```
 
+Swagger UI (`/docs`) includes a pre-filled example payload for quick testing.
+
 ---
 
 ## Run with Docker
@@ -228,19 +290,20 @@ Tests cover:
 
 All constants and default parameter values live in `src/config.py`.
 `DEFAULTS_PARAMS` is the single source of truth for all model and training
-defaults. `HYPER_PARAMS` defines the Optuna search space — comment/uncomment
-entries to control which parameters are tuned vs. held at their default.
+defaults. `HYPER_PARAMS` defines the Optuna search space.
 
 ```python
 # src/config.py (excerpt)
 TICKER = "AAPL"
 WINDOW_SIZE = 30
-TRAIN_SPLIT = 0.70
-VALIDATION_SPLIT = 0.85
-OPTUNA_TRIALS = 20
+TRAIN_SPLIT = 0.90
+VALIDATION_SPLIT = 0.95
+OPTUNA_TRIALS = 25
+SEED = 42
 
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
+MLFLOW_MODEL_NAME = "LSTMStockPredictor"
 
 DEFAULTS_PARAMS = {
     "epochs": 100,
@@ -262,9 +325,9 @@ HYPER_PARAMS = {
 }
 ```
 
-> Parameters removed from `HYPER_PARAMS` automatically fall back to their
-> value in `DEFAULTS_PARAMS`. Every parameter in `HYPER_PARAMS` must have
-> a corresponding entry in `DEFAULTS_PARAMS`.
+> Every parameter in `HYPER_PARAMS` must have a corresponding entry in
+> `DEFAULTS_PARAMS`. Removing a parameter from `HYPER_PARAMS` (but keeping
+> its default) stops it from being tuned without breaking the pipeline.
 
 ---
 
@@ -312,9 +375,10 @@ be enforced at the full dependency-tree level via a lockfile.
 
 | Limitation | Notes |
 |---|---|
-| **Exploratory search only** | 10-trial Optuna run with categorical search space. Production-grade search requires more trials, `suggest_float`/`suggest_int` for continuous params, and Optuna pruners. |
-| **Distribution shift on test set** | Model trained on 2010–2021 data performs worse on 2024–2026 data due to price regime change. Walk-forward validation and returns-based modelling are planned mitigations. |
-| **MLflow Model Registry not yet used** | Model artifacts are logged per run but not registered or versioned in the MLflow Model Registry. |
+| **Single train/val/test split** | The 90/5/5 split uses one fixed historical window. Walk-forward validation (rolling multiple train/test windows through time) would give a more robust generalization estimate. |
+| **Small test set** | 5% of ~4,000 trading days (~200 days) gives a noisier held-out estimate than the earlier 15% split. The current +1.17% generalization gap should be read with this in mind. |
+| **Categorical search space only** | Optuna currently uses `suggest_categorical` over discrete lists. `suggest_float`/`suggest_int` with continuous ranges and pruners for early trial termination are not yet implemented. |
+| **Test metrics logged (not used) during search** | Every Optuna trial logs test-set metrics for diagnostic visibility, but trial selection strictly uses validation RMSE% only. Test metrics are never fed into the objective function. |
 | **Predictor test requires trained artifacts** | `tests/test_predictor.py` loads real model and scaler files from `models/`, which are gitignored. Proper fix is mocking `load_model`/`joblib.load`; deferred for now. |
 | **No multi-step forecasting** | The model predicts one day ahead. Multi-day forecasting via recursive window-sliding is a planned `Predictor` extension. |
 
@@ -328,15 +392,11 @@ be enforced at the full dependency-tree level via a lockfile.
 - [ ] Walk-forward validation / time series cross-validation
 - [ ] Window size as a swept hyperparameter
 
-### Training pipeline
-- [ ] Train final production model on all available historical data
-- [ ] Returns-based modelling experiment to reduce distribution shift sensitivity
-
-### MLflow & model management
-- [ ] MLflow Model Registry — register, version, and promote best models
-- [ ] Prediction service using registered model URI instead of local file path
+### Model management
+- [ ] Load model for inference by MLflow Model Registry alias, not local file path
 - [ ] Mock-based tests for `Predictor` (no real artifacts required on fresh clone)
 
 ### Deployment & monitoring
 - [ ] Cloud deployment (AWS/GCP) with Docker registry push
 - [ ] Prometheus + Grafana monitoring for prediction latency and data drift
+- [ ] Returns-based modelling experiment as an alternative to price-level prediction

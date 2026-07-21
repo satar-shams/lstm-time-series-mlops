@@ -9,13 +9,14 @@ START_DATE = "2010-01-01"
 END_DATE = "2026-06-26"
 WINDOW_SIZE = 30
 
-TRAIN_SPLIT = 0.70
-VALIDATION_SPLIT = 0.85
+TRAIN_SPLIT = 0.90
+VALIDATION_SPLIT = 0.95
 
 MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
 
-OPTUNA_TRIALS = 10
+OPTUNA_TRIALS = 25
+SEED = 42
 
 # Every hyperparameter must have a corresponding default value.
 # To stop tuning a parameter, remove it from HYPER_PARAMS but keep its default value.
@@ -39,3 +40,5 @@ HYPER_PARAMS = {
     "dropout_rate": [0.3, 0.5, 0.7],
     "clip_norm":[0.5, 1.0, 2.0, 5.0],
 }
+
+MLFLOW_MODEL_NAME = "LSTMStockPredictor"

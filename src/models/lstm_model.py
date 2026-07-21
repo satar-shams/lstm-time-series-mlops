@@ -3,6 +3,7 @@ from tensorflow import keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras import Input
+from tensorflow.keras.optimizers import Adam
 
 class LSTMForecaster:
 
@@ -16,3 +17,15 @@ class LSTMForecaster:
             Dense(1)
         ])
         return model
+        
+    def compile_model(self, model, learning_rate: float, clip_norm: float):
+        
+        model.compile(
+            optimizer=Adam(
+                learning_rate=learning_rate,
+                clipnorm=clip_norm,
+            ),
+            loss="mae",
+            metrics=[keras.metrics.RootMeanSquaredError()],
+        )
+        
