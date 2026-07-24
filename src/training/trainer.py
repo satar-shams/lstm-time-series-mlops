@@ -39,9 +39,9 @@ class TimeSeriesTraining:
 
     def save_model_locally(self, model):
         os.makedirs("models", exist_ok=True)
-        model.save("models/best_model.keras")
-        print("\n✅ Best model saved in:")
-        print("models/best_model.keras\n")
+        model.save("models/production_model.keras")
+        print("\n✅ Production model saved in:")
+        print("models/production_model.keras\n")
 
     def prepare_training(self):
         set_random_seed()
@@ -90,7 +90,7 @@ class TimeSeriesTraining:
         study,
         best_run_id,
     ):
-        with mlflow.start_run(run_name="final_model") as run:
+        with mlflow.start_run(run_name="candidate_model") as run:
             self.mlflow_manager.log_param("source_trial_number", study.best_trial.number)
             self.mlflow_manager.log_param("training_dataset", "train+validation")
             self.mlflow_manager.log_param("source_trial_run_id", best_run_id)            
@@ -101,6 +101,18 @@ class TimeSeriesTraining:
             self.mlflow_manager.log_scaler()
             return run.info.run_id
     
+    def log_production_model(self, model, cfg):
+            # No metrics logged — there is no held-out data left to evaluate
+            # against honestly, since this model was trained on train+val+test.
+            # The candidate model's test metrics (logged separately) remain the
+            # last honest performance estimate for this configuration.
+            with mlflow.start_run(run_name="production_model") as run:
+                self.mlflow_manager.log_param("training_dataset", "train+validation+test")
+                self.mlflow_manager.log_params(cfg)
+                self.mlflow_manager.log_model(model, WINDOW_SIZE)
+                self.mlflow_manager.log_scaler()
+                return run.info.run_id 
+
     def run(self):
         self.summary.print_section("Preparing Training")
         self.prepare_training()
@@ -148,14 +160,7 @@ class TimeSeriesTraining:
         self.registry.set_alias(
             model_name=MLFLOW_MODEL_NAME,
             version=version,
-            alias="production",
-        )
-
-        self.summary.final_summary(
-            study,
-            metrics,
-            best_run_id,
-            version,
+            alias="candidate",
         )
 
         self.summary.print_section("Training Production Model (All Data)    ")
@@ -164,7 +169,32 @@ class TimeSeriesTraining:
             X=X_production,
             y=y_production,
         )
+
+        production_run_id = self.log_production_model(
+            production_model,
+            cfg,
+        )
+        
+        version = self.registry.register_model(
+            run_id=production_run_id,
+            model_name=MLFLOW_MODEL_NAME,
+        )
+
+        self.registry.set_alias(
+            model_name=MLFLOW_MODEL_NAME,
+            version=version,
+            alias="production",
+        )
+
         self.save_model_locally(production_model)
+
+        self.summary.final_summary(
+            study,
+            metrics,
+            best_run_id,
+            version,
+        )
+
 
 if __name__ == "__main__":
     model = TimeSeriesTraining()

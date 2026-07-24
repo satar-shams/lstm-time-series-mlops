@@ -1,9 +1,11 @@
 import mlflow
 from mlflow import MlflowClient
+import joblib
 
-
+from src.config import MLFLOW_TRACKING_URI
 class ModelRegistry:
     def __init__(self):
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         self.client = MlflowClient()
 
     def register_model(self, run_id: str, model_name: str):
@@ -30,3 +32,49 @@ class ModelRegistry:
     def get_latest_version_by_alias(self, model_name: str, alias: str = "production"):
         mv = self.get_model_by_alias(model_name, alias)
         return mv.version if mv else None
+
+    def load_model_by_alias(
+        self,
+        model_name: str,
+        alias: str = "production",
+    ):
+        model_uri = f"models:/{model_name}@{alias}"
+
+        return mlflow.tensorflow.load_model(model_uri)
+    
+    def load_scaler_by_model_version(
+        self,
+        model_version,
+    ):
+        scaler_path = mlflow.artifacts.download_artifacts(
+            run_id=model_version.run_id,
+            artifact_path="scaler/scaler.bin",
+        )
+
+        return joblib.load(scaler_path)
+    
+    def load_production_model(
+        self,
+        model_name: str,
+        alias: str = "production",
+    ):
+        model_version = self.get_model_by_alias(
+            model_name=model_name,
+            alias=alias,
+        )
+
+        if model_version is None:
+            raise ValueError(
+                f"No model found for {model_name}@{alias}"
+            )
+
+        model = self.load_model_by_alias(
+            model_name=model_name,
+            alias=alias,
+        )
+
+        scaler = self.load_scaler_by_model_version(
+            model_version=model_version,
+        )
+
+        return model, scaler

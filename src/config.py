@@ -1,6 +1,3 @@
-APP_HOST = "127.0.0.1"
-APP_PORT = 8000
-
 MODEL_PATH = "models/best_model.keras"
 SCALER_PATH = "models/scaler.bin"
 
@@ -12,7 +9,7 @@ WINDOW_SIZE = 30
 TRAIN_SPLIT = 0.90
 VALIDATION_SPLIT = 0.95
 
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_TRACKING_URI = "http://0.0.0.0:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
 
 OPTUNA_TRIALS = 25
