@@ -16,48 +16,64 @@ tests.
 
 ## Project structure
 
-```
 lstm-time-series-mlops/
 ├── src/
-│   ├── config.py                  # Single source of truth for all constants and defaults
-│   ├── data/
-│   │   ├── loader.py              # StockLoader — yfinance fetch + validation
-│   │   └── preprocessor.py        # TimeSeriesPreprocessor — scaling, windowing, three-way split
-│   ├── models/
-│   │   └── lstm_model.py          # LSTMForecaster — architecture + compilation
-│   ├── training/
-│   │   ├── trainer.py             # TimeSeriesTraining — orchestrates the full pipeline
-│   │   ├── optuna_tuner.py        # LSTMOptuna — hyperparameter search, per-trial MLflow logging
-│   │   ├── single_model_trainer.py # SingleModelTrainer — trains one model for a given config
-│   │   ├── evaluator.py           # LSTMEvaluator — real-price MAE/RMSE/RMSE%
-│   │   ├── mlflow_manager.py      # MLFlowManager — param/metric/model/artifact logging
-│   │   ├── model_registry.py      # ModelRegistry — registration and alias-based versioning
-│   │   ├── callbacks.py           # EarlyStopping + ReduceLROnPlateau factory
-│   │   ├── summary.py             # TrainingSummary — structured console output
-│   │   └── utils.py               # set_random_seed() — reproducibility across runs
-│   └── inference/
-│       └── predictor.py           # Predictor — load model/scaler, predict, inverse-transform
+│ ├── config.py # Single source of truth for all constants and defaults
+│ ├── data/
+│ │ ├── loader.py # StockLoader — yfinance fetch + validation
+│ │ └── preprocessor.py # TimeSeriesPreprocessor — scaling, windowing, three-way split
+│ ├── models/
+│ │ ├── lstm_model.py # LSTMForecaster — architecture + compilation
+│ │ └── base_model.py # Reserved for a shared model interface if more model types are added
+│ ├── training/
+│ │ ├── trainer.py # TimeSeriesTraining — orchestrates the full pipeline
+│ │ ├── optuna_tuner.py # LSTMOptuna — hyperparameter search, per-trial MLflow logging
+│ │ ├── single_model_trainer.py # SingleModelTrainer — trains one model for a given config
+│ │ ├── evaluator.py # LSTMEvaluator — real-price MAE/RMSE/RMSE%
+│ │ ├── mlflow_manager.py # MLFlowManager — param/metric/model/artifact logging
+│ │ ├── model_registry.py # ModelRegistry — registration, alias-based versioning, model loading
+│ │ ├── callbacks.py # EarlyStopping + ReduceLROnPlateau factory
+│ │ ├── summary.py # TrainingSummary — structured console output
+│ │ └── utils.py # set_random_seed() — reproducibility across runs
+│ └── inference/
+│ └── predictor.py # Predictor — loads model/scaler from MLflow Registry, predicts
 ├── app/
-│   ├── main.py                    # FastAPI application
-│   ├── example.py                 # Sample prediction payload for Swagger UI
-│   └── core/
-│       └── logger.py              # Structured JSON logger
+│ ├── main.py # FastAPI application entrypoint
+│ ├── example.py # Sample prediction payload for Swagger UI
+│ ├── api/
+│ │ └── routes/
+│ │ ├── health.py # GET /api/v1/health
+│ │ └── prediction.py # POST /api/v1/predict
+│ ├── core/
+│ │ ├── config.py # APISettings — env-based host/port/version via pydantic-settings
+│ │ ├── exceptions.py # ModelLoadError, PredictionFailedError
+│ │ ├── exception_handlers.py # Maps custom exceptions to clean JSON error responses
+│ │ └── logger.py # Structured JSON logger
+│ └── schemas/
+│ ├── health.py # HealthResponse
+│ └── prediction.py # PredictRequest (length-validated), PredictResponse
 ├── tests/
-│   ├── test_preprocessor.py       # Windowing boundary cases + scaler round-trip
-│   └── test_predictor.py          # Input validation (ValueError on wrong length)
+│ ├── test_loader.py
+│ └── test_lstm_model.py
+├── scripts/
+│ └── train.py
 ├── notebooks/
-│   ├── exploration.ipynb
-│   └── train_legacy.py            # Original flat training script, kept for reference
-├── models/                        # Gitignored — populated by training runs
-├── mlruns/                        # Gitignored — MLflow local run metadata
-├── mlartifacts/                   # Gitignored — MLflow model and scaler artifacts
-├── mlflow.db                      # Gitignored — MLflow SQLite backend
+│ ├── exploration.ipynb
+│ ├── LSTM_Training_MLflow.ipynb
+│ ├── Load_Save_registered_Model.ipynb
+│ └── train_legacy.py # Original flat training script, kept for reference
+├── models/ # Gitignored — populated by training runs
+├── mlruns/ # Gitignored — MLflow local run metadata
+├── mlartifacts/ # Gitignored — MLflow model and scaler artifacts
+├── mlflow.db # Gitignored — MLflow SQLite backend
+├── .env # Gitignored — local environment variables
+├── .env.example # Committed template for required environment variables
 ├── Dockerfile
-├── requirements.txt               # Top-level production dependencies
-├── requirements.lock              # Full pinned environment (used by Docker)
-├── requirements-dev.txt           # Dev-only dependencies (pytest)
+├── requirements.txt # Top-level production dependencies
+├── requirements.lock # Full pinned environment (used by Docker)
+├── requirements-dev.txt # Dev-only dependencies (pytest)
 └── README.md
-```
+
 
 ---
 
@@ -214,20 +230,44 @@ test set, registers it in the MLflow Model Registry under the alias
 `production`, then retrains a final production model on all available
 data and saves it locally.
 
-### 4. Run the API locally
+### 4. Configure the API environment
+
+The API reads its host and port from environment variables via
+`pydantic-settings`. Copy the example file and adjust if needed:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example` contents:
+
+APP_HOST=0.0.0.0
+APP_PORT=8000
+
+`.env` is gitignored — each environment (local, CI, production) supplies
+its own values. `.env.example` documents the required keys with safe
+placeholder values.
+
+### 5. Run the API locally
+
+> **MLflow must be running before starting the API.** `Predictor` loads
+> the production model and scaler directly from the MLflow Model Registry
+> at startup — if the MLflow server (step 2) isn't running, the API will
+> fail to start.
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 5. Test the endpoints
+### 6. Test the endpoints
 
 ```bash
 curl http://localhost:8000/
+curl http://localhost:8000/api/v1/health
 ```
 
 ```bash
-curl -X POST http://localhost:8000/predict \
+curl -X POST http://localhost:8000/api/v1/predict \
   -H "Content-Type: application/json" \
   -d '{
     "data": [
@@ -305,6 +345,26 @@ MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
 MLFLOW_EXPERIMENT_NAME = "LSTM Stock Prediction"
 MLFLOW_MODEL_NAME = "LSTMStockPredictor"
 
+### Model Registry: candidate vs. production
+
+Every training run registers two separate model versions under
+`LSTMStockPredictor`, linked by identical hyperparameters but trained on
+different data:
+
+- **`@candidate`** — trained on train+validation, evaluated once on the
+  held-out test set. This version carries the only honest, trustworthy
+  performance number in the pipeline (see "Final Test RMSE%" in the
+  training summary). It is not served in production.
+- **`@production`** — trained on train+validation+test (all available
+  history), using the same configuration the candidate proved sound. This
+  version has no held-out test metrics of its own — there is no unseen
+  data left to evaluate it against — but it is the most data-informed
+  model available, and it is the one `Predictor` loads and serves.
+
+In short: `@candidate` tells you how good the configuration is;
+`@production` is what actually answers requests, trained on everything
+that configuration has proven itself against.
+
 DEFAULTS_PARAMS = {
     "epochs": 100,
     "batch_size": 32,
@@ -381,6 +441,8 @@ be enforced at the full dependency-tree level via a lockfile.
 | **Test metrics logged (not used) during search** | Every Optuna trial logs test-set metrics for diagnostic visibility, but trial selection strictly uses validation RMSE% only. Test metrics are never fed into the objective function. |
 | **Predictor test requires trained artifacts** | `tests/test_predictor.py` loads real model and scaler files from `models/`, which are gitignored. Proper fix is mocking `load_model`/`joblib.load`; deferred for now. |
 | **No multi-step forecasting** | The model predicts one day ahead. Multi-day forecasting via recursive window-sliding is a planned `Predictor` extension. |
+| **Placeholder test/model files empty** | `tests/test_loader.py`, `tests/test_lstm_model.py`, `src/models/base_model.py` are reserved for future work but currently contain no code. |
+| **API startup hangs rather than failing fast without MLflow** | If the MLflow server is unreachable, `uvicorn` startup does not exit cleanly (may require `pkill`/force-kill). Root cause is likely MLflow client's internal retry/backoff on connection failure. A startup connection-timeout check is a reasonable future improvement, not yet implemented. |
 
 ---
 

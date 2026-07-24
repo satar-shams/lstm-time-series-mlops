@@ -9,7 +9,7 @@ def sample_wrong_input_length() -> list[float]:
 
 
 def test_predictor_wrong_length(sample_wrong_input_length):
-    predictor = Predictor(model_path="models/best_model.keras", scaler_path="models/scaler.bin")
-    with pytest.raises(ValueError, match = "Expected 30 values"):
+    predictor = Predictor()
+    with pytest.raises(ValueError, match="Expected 30 values"):
         predictor.predict(sample_wrong_input_length)
 
