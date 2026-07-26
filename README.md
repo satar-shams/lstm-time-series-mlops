@@ -315,14 +315,43 @@ docker run -p 8000:8000 lstm-api
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest
 ```
 
+**Unit tests only** (fast, no external dependencies — safe for CI):
+
+```bash
+python -m pytest tests/ -v --ignore=tests/test_api.py --ignore=tests/test_predictor_integration.py
+```
+
+**Full suite, including integration tests** (requires the MLflow server
+running with a registered `production` model — see step 2 above):
+
+```bash
+python -m pytest tests/ -v
+```
+
+`test_api.py` and `test_predictor_integration.py` construct a real
+`Predictor()` at import time, which connects to the MLflow Model
+Registry. Both are marked `@pytest.mark.integration`, but since the
+connection happens at import — before pytest's marker filtering runs —
+they must be excluded via `--ignore`, not just deselected with
+`-m "not integration"`.
+
 Tests cover:
-- `create_windows` boundary cases (first, middle, last window) with
-  hand-verified expected arrays
-- Scaler fit/transform/inverse\_transform round-trip correctness
-- `Predictor` input length validation (`ValueError` on wrong-length input)
+- `StockLoader.fetch()` — success, empty-response handling, MultiIndex
+  column flattening (all mocked, no live yfinance calls)
+- `TimeSeriesPreprocessor` — three-way split boundaries, windowing
+  (first/middle/last), scaler fit/transform/inverse\_transform round-trip
+- `LSTMForecaster` — architecture, layer types, prediction shape,
+  compilation
+- `ModelRegistry` — registration, alias assignment, model/scaler loading
+  (all mocked, no live MLflow calls)
+- `Predictor` — success path, model-load failure, prediction failure
+  (mocked) and a live end-to-end prediction (integration, requires MLflow)
+- FastAPI routes — health check, successful prediction, invalid input
+  length (integration, requires MLflow — see note above)
+
+  | **Integration tests require --ignore, not just -m "not integration"** | `test_api.py` and `test_predictor_integration.py` construct `Predictor()` at import time, which connects to MLflow before pytest's marker filtering applies. Proper fix is lazy-loading `Predictor` inside a FastAPI dependency rather than at module level. |
 
 ---
 

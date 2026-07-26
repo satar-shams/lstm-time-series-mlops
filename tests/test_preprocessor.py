@@ -9,10 +9,40 @@ from src.data.preprocessor import TimeSeriesPreprocessor
 def sample_raw_data() -> np.ndarray:
     sample_data = np.arange(40).reshape(-1, 1)
     return sample_data
-    
+
+def test_run_all_three_way_split(sample_raw_data):
+    sample_df = pd.DataFrame(
+        sample_raw_data,
+        columns=["Close"],
+    )
+    preprocessor = TimeSeriesPreprocessor(
+        windows_size=10,
+        train_split_size=0.8,
+        validation_split_size=0.9,
+    )
+    data =  preprocessor.run_all(sample_df)
+    assert preprocessor.training_end_index == 32
+    assert preprocessor.validation_end_index == 36
+
+    assert data["X_train"].shape == (22, 10, 1)
+    assert data["X_val"].shape == (4, 10, 1)
+    assert data["X_test"].shape == (4, 10, 1)
+
+    assert len(data["y_train"]) == 22
+    assert len(data["y_val"]) == 4
+    assert len(data["y_test"]) == 4
+
+    np.testing.assert_array_equal(
+        data["y_val_real"].values, np.arange(32, 36),
+    )
+
+    np.testing.assert_array_equal(
+        data["y_test_real"].values, np.arange(36, 40),
+    )
+
 def test_create_window_middle(sample_raw_data):
     preprocessor = TimeSeriesPreprocessor(30)
-
+    
     X, y = preprocessor.create_windows(sample_raw_data)
 
     x5_window_function = X[5].flatten()
@@ -77,7 +107,6 @@ def test_scaler(sample_df):
     real_data = data[-2]
 
     assert inversed_transformed_data  == pytest.approx(real_data, abs=1e-6)
-
 
 def test_scaler_array(sample_df):
     preprocessor = TimeSeriesPreprocessor()
