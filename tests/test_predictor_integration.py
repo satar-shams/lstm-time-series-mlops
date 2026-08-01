@@ -1,25 +1,5 @@
-from unittest.mock import patch
-
-import numpy as np
-import pytest
-
-from app.core.exceptions import (
-    ModelLoadError,
-    PredictionFailedError,
-)
 from src.inference.predictor import Predictor
-class FakeScaler:
-    def transform(self, data):
-        return data
-
-    def inverse_transform(self, data):
-        return data
-class FakeModel:
-    def predict(self, data):
-        return np.array([[123.45]])
-class FailingModel:
-    def predict(self, data):
-        raise RuntimeError("Model prediction failed")
+import pytest
 
 @pytest.fixture
 def sample_input_length() -> list[float]:
@@ -56,34 +36,15 @@ def sample_input_length() -> list[float]:
                             275.1499938964844
                             ]
     return real_data
-
+@pytest.mark.integration
 def test_predictor_success(sample_input_length):
-    with patch(
-        "src.inference.predictor.ModelRegistry.load_production_model",
-        return_value=(FakeModel(), FakeScaler()),
-    ):
-        predictor = Predictor()
-        prediction = predictor.predict(sample_input_length)
+    """
+    Integration test.
+
+    Requires the MLflow server to be running and a production
+    model registered under the 'production' alias.
+    """
+    predictor = Predictor()
+    prediction = predictor.predict(sample_input_length)
 
     assert isinstance(prediction, float)
-
-def test_predictor_model_load_failure():
-    with patch(
-        "src.inference.predictor.ModelRegistry.load_production_model",
-        side_effect=Exception("MLflow unavailable"),
-    ):
-        with pytest.raises(ModelLoadError, match="Failed to load production model"):
-            Predictor()
-
-def test_predictor_prediction_failure(sample_input_length):
-    with patch(
-        "src.inference.predictor.ModelRegistry.load_production_model",
-        return_value=(FailingModel(), FakeScaler()),
-    ):
-        predictor = Predictor()
-
-        with pytest.raises(
-            PredictionFailedError,
-            match="Failed to generate prediction",
-        ):
-            predictor.predict(sample_input_length)
