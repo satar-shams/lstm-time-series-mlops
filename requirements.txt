@@ -8,3 +8,4 @@ scikit-learn==1.5.2
 mlflow==3.14.0
 optuna==4.9.0
 pydantic-settings==2.14.2
+yfinance==1.4.1
