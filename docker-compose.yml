@@ -43,7 +43,7 @@ services:
 
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.trainer
 
     depends_on:
       mlflow:
@@ -59,7 +59,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
 
     depends_on:
       mlflow:
