@@ -431,7 +431,7 @@ For quick local debugging without containers.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.trainer.lock -r requirements.api.lock
+pip install -r requirements.trainer.lock -r requirements.api.lock -r requirements.mlflow.lock
 ```
 
 Start MLflow directly:
