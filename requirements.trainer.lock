@@ -7,4 +7,3 @@ pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.5.2
 joblib==1.5.3
-python-dotenv==1.2.2
