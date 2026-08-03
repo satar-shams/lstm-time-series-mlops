@@ -7,11 +7,4 @@ COPY requirements.mlflow.lock .
 RUN python -m pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.mlflow.lock
 
-CMD [
-"mlflow",
-"server",
-"--host",
-"0.0.0.0",
-"--port",
-"5000"
-]
+CMD ["mlflow", "server", "--host", "0.0.0.0"]
