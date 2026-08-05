@@ -53,6 +53,7 @@ jobs:
           context: .
           file: Dockerfile.api
           push: false
+          load: true
           tags: lstm-api:test
 
       - name: Run API container
