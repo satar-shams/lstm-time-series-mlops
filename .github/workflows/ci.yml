@@ -32,6 +32,8 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
+        env:
+          MODEL_SOURCE: local
         run: |
           python -m pytest tests/ -v \
           --ignore=tests/test_api.py \
