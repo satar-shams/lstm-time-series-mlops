@@ -22,7 +22,7 @@ env/
 .ipynb_checkpoints/
 notebooks/
 
-# MLflow local artifacts
+# Local MLflow tracking artifacts
 mlruns/
 mlartifacts/
 mlflow.db

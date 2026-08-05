@@ -1,0 +1,67 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - ci-cd-test
+
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.trainer.lock
+          pip install -r requirements.api.lock
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          MODEL_SOURCE: local
+        run: |
+          python -m pytest tests/ -v \
+          --ignore=tests/test_api.py \
+          --ignore=tests/test_predictor_integration.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: false
+          tags: lstm-api:test
+
+      - name: Build Trainer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.trainer
+          push: false
+          tags: lstm-trainer:test
+
+      - name: Build MLflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mlflow
+          push: false
+          tags: lstm-mlflow:test
