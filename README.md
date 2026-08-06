@@ -10,11 +10,15 @@ serving modes (local file or MLflow Registry), structured logging, input
 validation, automated tests, continuous integration, and a live cloud
 deployment.
 
-> **Status:** Phase 2 milestone. Optuna search, MLflow tracking, alias-based
-> Model Registry, a fully Dockerised training/serving pipeline (Docker
-> Compose, one image per service), a GitHub Actions CI pipeline, and a live
-> deployment on Render are complete. Walk-forward validation, continuous
-> hyperparameter ranges, and full MLflow-backed cloud serving are next.
+> **Status:** Core project complete. Optuna search, MLflow tracking,
+> alias-based Model Registry, a Dockerised training/serving pipeline
+> (Docker Compose, one image per service), dual model-loading modes
+> (local file / MLflow Registry), an automated test suite covering both
+> modes, a full CI/CD pipeline (unit tests, container smoke tests,
+> automated image publishing to GitHub Container Registry), and a live
+> cloud deployment are all complete. Remaining items — validation
+> robustness, image size optimisation, monitoring — are tracked as
+> optional future work below, not blockers.
 
 ---
 
@@ -65,8 +69,8 @@ lstm-time-series-mlops/
 │   ├── test_data_loader.py         # StockLoader (mocked yfinance)
 │   ├── test_lstm_model.py          # Empty — reserved for future LSTMForecaster tests
 │   ├── test_model_registry.py      # ModelRegistry (mocked MLflow)
-│   ├── test_predictor.py           # Predictor unit tests (mocked MLflow)
-│   ├── test_predictor_integration.py # Predictor live end-to-end (integration, requires MLflow)
+│   ├── test_predictor.py           # Predictor unit tests for local and MLflow modes (mocked, skip-conditioned on MODEL_SOURCE)
+│   ├── test_predictor_integration.py # Predictor end-to-end integration test (requires MLflow)
 │   ├── test_preprocessor.py        # Windowing, three-way split, scaler round-trip
 │   └── test_loader.py              # Empty — reserved for future StockLoader tests
 ├── scripts/
@@ -242,8 +246,9 @@ is real but should be read in that context, not as a fully closed question.
 | Serving | FastAPI + Uvicorn, dual-mode model loading (local file / MLflow Registry) |
 | Persistence | joblib (scaler), Keras native `.keras` format (model) |
 | Containerisation | Docker + Docker Compose — separate images per service (`api`, `trainer`, `mlflow`) |
-| CI | GitHub Actions — unit tests + build all three images on every push |
-| Cloud hosting | Render (API image, `MODEL_SOURCE=local`) |
+| CI/CD | GitHub Actions — unit tests, container smoke test, automated image publishing to GHCR |
+| Image registry | GitHub Container Registry (ghcr.io) |
+| Cloud hosting | Render — live at `lstm-api-prod.onrender.com` (`MODEL_SOURCE=local`) |
 | Tests | pytest, httpx |
 
 ---
@@ -417,10 +422,19 @@ The API is currently deployed on Render's free tier, using
 `--workers 1`) approaches or exceeds this limit on its own, before the API
 itself is accounted for. Rather than pay for larger infrastructure at this
 stage, the pipeline was made to support both modes deliberately, and the
-cloud deployment currently uses the mode that has no MLflow memory
-footprint at all. Moving the cloud deployment to `MODEL_SOURCE=mlflow`
-(the intended long-term architecture) is scoped in the roadmap, pending
-either better free-tier options or paid infrastructure.
+cloud deployment uses the mode that has no MLflow memory footprint at
+all. Moving the cloud deployment to `MODEL_SOURCE=mlflow` is a possible
+future improvement, tracked as optional below.
+
+**Live deployment:** `https://lstm-api-prod.onrender.com`
+
+```bash
+curl https://lstm-api-prod.onrender.com/api/v1/health
+```
+
+Verified externally (independent of the deployer's own network) via
+https://reqbin.com against `/`, `/api/v1/health`, and `/api/v1/predict`
+(through `/docs`).
 
 **Corrected architecture — what is actually deployed right now:**
 
@@ -500,22 +514,36 @@ impactful next steps if image size matters further.
 
 ---
 
-## Continuous integration
+## CI/CD
 
 `.github/workflows/ci.yml` runs on every push to `main`, `dev`, and
 `ci-cd-test`, and on pull requests targeting `main`/`dev`:
 
-1. Installs dependencies from `requirements.trainer.lock` +
-   `requirements.api.lock` + `requirements-dev.txt`
-2. Runs the unit test suite (`--ignore=tests/test_api.py
-   --ignore=tests/test_predictor_integration.py` — the two tests that
-   require a live MLflow server are excluded, see Run Tests)
-3. Builds all three Docker images (`api`, `trainer`, `mlflow`) to confirm
-   each `Dockerfile` still builds cleanly
+1. **Unit tests.** Installs dependencies from `requirements.trainer.lock`
+   + `requirements.api.lock` + `requirements-dev.txt`, then runs the unit
+   test suite with `MODEL_SOURCE=local`. Integration tests requiring
+   external services are excluded (`--ignore=tests/test_api.py
+   --ignore=tests/test_predictor_integration.py`). `test_predictor.py`'s
+   unit tests do **not** require MLflow — they cover both `local` and
+   `mlflow` model-loading paths via mocking, with
+   `@pytest.mark.skipif(settings.MODEL_SOURCE != ...)` selecting which
+   half runs for the current `MODEL_SOURCE`.
+2. **Container smoke test.** Builds the `api` image, runs it as a real
+   container (`MODEL_SOURCE=local`), waits for startup, then hits
+   `/api/v1/health` and `/api/v1/predict` with `curl --fail` against the
+   running container — not just a build check, an actual request/response
+   round trip. The container is stopped and removed afterward regardless
+   of outcome (`if: always()`).
+3. **Image publishing.** On push events only (not pull requests), and
+   only after the tests and smoke test above pass, all three images
+   (`api`, `trainer`, `mlflow`) are built and pushed to GitHub Container
+   Registry, tagged both `:latest` and `:<commit-sha>`:
+   - `ghcr.io/<owner>/lstm-api`
+   - `ghcr.io/<owner>/lstm-trainer`
+   - `ghcr.io/<owner>/lstm-mlflow`
 
-CI validates builds and tests; it does not yet push images to a registry
-or deploy — the current Render deployment is manual (see above). Automating
-that is on the roadmap.
+Publishing gated behind passing tests and a passing smoke test means a
+broken image cannot reach the registry.
 
 ---
 
@@ -539,12 +567,12 @@ running with a registered `production` model):
 python -m pytest tests/ -v
 ```
 
-`test_api.py` and `test_predictor_integration.py` construct a real
-`Predictor()` at import time, which connects to the MLflow Model
-Registry. Both are marked `@pytest.mark.integration`, but since the
-connection happens at import — before pytest's marker filtering runs —
-they must be excluded via `--ignore`, not just deselected with
-`-m "not integration"`. See Known Limitations.
+`test_api.py` and `test_predictor_integration.py` require a running
+MLflow service because they instantiate the real application stack,
+including a live `Predictor()` connected to the MLflow Model Registry.
+They are excluded from CI's unit test run via `--ignore` and executed
+separately when the full Docker Compose environment (`mlflow` running,
+a registered `production` model) is available.
 
 Tests cover:
 - `StockLoader.fetch()` — success, empty-response handling, MultiIndex
@@ -728,19 +756,23 @@ experiment, never editing the old one's stored config.
 | **Small test set** | 5% of ~4,000 trading days (~200 days) gives a noisier held-out estimate than the earlier 15% split. The current +1.17% generalization gap should be read with this in mind. |
 | **Categorical search space only** | Optuna currently uses `suggest_categorical` over discrete lists. `suggest_float`/`suggest_int` with continuous ranges and pruners are not yet implemented. |
 | **Test metrics logged (not used) during search** | Every Optuna trial logs test-set metrics for diagnostic visibility, but trial selection strictly uses validation RMSE% only. |
-| **Predictor integration tests require --ignore** | `test_api.py` and `test_predictor_integration.py` construct `Predictor()` at import time, connecting to MLflow before pytest's marker filtering applies. Proper fix is lazy-loading `Predictor` inside a FastAPI dependency. |
+| **Integration tests require external services** | `test_api.py` and `test_predictor_integration.py` require a running MLflow environment and are executed separately from CI's unit test run, not via pytest marker filtering alone. |
 | **No multi-step forecasting** | The model predicts one day ahead. Recursive window-sliding for multi-day forecasting is a planned `Predictor` extension. |
 | **Placeholder test files empty** | `tests/test_loader.py`, `tests/test_lstm_model.py`, `src/models/base_model.py` are reserved for future work but currently contain no code. |
 | **API startup hangs rather than failing fast when MODEL_SOURCE=mlflow and MLflow is unreachable** | `uvicorn` startup does not exit cleanly (may require force-kill). Likely MLflow client retry/backoff. Does not affect `MODEL_SOURCE=local`, which has no MLflow dependency at startup. |
 | **MLflow UI run links not browser-reachable** | Training logs "View run..." links using the internal Docker service address (`http://mlflow:5000`). Use `http://localhost:5000` directly instead. Cosmetic only. |
 | **Every Optuna trial logs a full model artifact** | Only the winning trial's model is functionally needed; storage is not yet optimized for this. |
 | **Per-service image split had limited size impact** | Splitting into `api`/`trainer`/`mlflow` images reduced size only ~1-2% — TensorFlow dominates image size far more than the training-only extras removed. `tensorflow-cpu` and multi-stage builds would be more impactful. |
-| **Cloud deployment currently uses `MODEL_SOURCE=local`, not MLflow** | Render's free tier (512MB) cannot comfortably run an MLflow server alongside the API. The MLflow-backed serving mode is fully implemented and tested locally, but is not what is live in production right now — see "Cloud deployment" above. |
+| **Live cloud deployment uses `MODEL_SOURCE=local`, not MLflow** | Render's free tier (512MB) cannot comfortably run an MLflow server alongside the API. The MLflow-backed serving mode is fully implemented and tested locally via Docker Compose, but the live deployment intentionally uses the mode with no MLflow memory footprint — see "Cloud deployment" above. |
 | **Local (non-Docker) training does not currently connect to the Dockerised MLflow instance** | Changes made to support Docker-based artifact storage (`--serve-artifacts`, allowed-hosts) broke the previously-working local `python -m src.training.trainer` path against a locally-run `mlflow server`. Deferred — will be revisited during a full fresh-clone verification pass. Docker-based training (`docker compose run --rm trainer`) is unaffected and is the currently-supported training path. |
 
 ---
 
-## Phase 2 roadmap
+## Optional future work
+
+The core project (training, tracking, registry, testing, CI/CD, and a live
+deployment) is complete. Everything below is a genuine improvement, not a
+gap blocking the project's current state.
 
 ### Hyperparameter search
 - [ ] Optuna `suggest_float` / `suggest_int` for continuous search spaces
@@ -759,7 +791,6 @@ experiment, never editing the old one's stored config.
 - [ ] Multi-stage Docker builds to discard pip build artifacts from final layers
 
 ### Deployment & monitoring
-- [ ] Push built images to a container registry from CI
-- [ ] Automated deploy from CI (currently manual)
+- [ ] Automated deploy from CI directly to Render (image publishing to GHCR is automated; the Render deploy step itself is still manual)
 - [ ] Prometheus + Grafana monitoring for prediction latency and data drift
 - [ ] Returns-based modelling experiment as an alternative to price-level prediction
