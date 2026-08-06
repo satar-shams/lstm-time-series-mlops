@@ -1,6 +1,5 @@
 # Git metadata
 .git
-.github
 
 # Python
 __pycache__/
