@@ -105,13 +105,15 @@ def test_load_production_model_success():
         return_value=fake_scaler,
     ):
 
-        model, scaler = registry.load_production_model(
+        model, scaler, model_info = registry.load_production_model(
             model_name="LSTMStockPredictor",
             alias="production",
         )
 
         assert model is fake_model
         assert scaler is fake_scaler
+        assert isinstance(model_info, dict)
+        assert model_info["run_id"] == "abc123"
 
 def test_load_production_model_missing_alias():
     registry = ModelRegistry()

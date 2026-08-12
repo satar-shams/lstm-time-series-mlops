@@ -52,7 +52,7 @@ class ModelRegistry:
         )
 
         return joblib.load(scaler_path)
-    
+        
     def load_production_model(
         self,
         model_name: str,
@@ -77,4 +77,11 @@ class ModelRegistry:
             model_version=model_version,
         )
 
-        return model, scaler
+        model_info = {
+            "name": model_version.name,
+            "version": model_version.version,
+            "run_id": model_version.run_id,
+            "alias": alias,
+        }
+
+        return model, scaler, model_info

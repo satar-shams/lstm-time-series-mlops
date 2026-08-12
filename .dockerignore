@@ -1,5 +1,6 @@
 # Git metadata
 .git
+.github
 
 # Python
 __pycache__/
@@ -21,7 +22,7 @@ env/
 .ipynb_checkpoints/
 notebooks/
 
-# MLflow local artifacts
+# Local MLflow tracking artifacts
 mlruns/
 mlartifacts/
 mlflow.db

@@ -43,30 +43,46 @@ services:
 
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.trainer
 
     depends_on:
       mlflow:
         condition: service_healthy
 
     environment:
-
       MLFLOW_TRACKING_URI: http://mlflow:5000
+
+    volumes:
+      - ./models:/app/models
 
     command:
       python -m src.training.trainer
 
+
   api:
+
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
 
-    depends_on:
-      mlflow:
-        condition: service_healthy
+    # NOTE:
+    # API currently supports local model loading (MODEL_SOURCE=local).
+    # Therefore MLflow is not required for API startup.
+    #
+    # Future MLflow mode:
+    # If MODEL_SOURCE=mlflow is used, this dependency should be enabled
+    # to guarantee MLflow server availability.
+    #
+    # depends_on:
+    #   mlflow:
+    #     condition: service_healthy
 
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_SOURCE: ${MODEL_SOURCE:-local}
+
+    volumes:
+      - ./models:/app/models
 
     ports:
       - "8000:8000"

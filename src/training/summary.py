@@ -77,7 +77,7 @@ class TrainingSummary:
 
         print("\nArtifacts")
         print("-" * 60)
-        print("Production Model      : models/best_model.keras")
+        print("Production Model      : models/production_model.keras")
         print("Scaler                : models/scaler.bin")
 
         print("\nMLflow")

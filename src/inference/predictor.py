@@ -1,4 +1,9 @@
 import numpy as np
+import joblib
+
+from app.core.config import settings
+from tensorflow.keras.models import load_model
+
 
 from src.config import WINDOW_SIZE, MLFLOW_MODEL_NAME   
 from src.training.model_registry import ModelRegistry
@@ -9,15 +14,54 @@ from app.core.exceptions import (
 )
 class Predictor:
     def __init__(self):
-        self.registry = ModelRegistry()
-        try:
-            self.model, self.scaler = self.registry.load_production_model(
-                model_name=MLFLOW_MODEL_NAME,
-                alias="production",
-            )
-        except Exception as e:
-            raise ModelLoadError(f"Failed to load production model:{e}") from e
+        if settings.MODEL_SOURCE == settings.MODEL_SOURCE_LOCAL:
+            try:
+                self.model = load_model(settings.MODEL_PATH)
+                self.scaler = joblib.load(settings.SCALER_PATH)
 
+                self.model_info = {
+                    "source": "local",
+                    "model_path": settings.MODEL_PATH,
+                    "scaler_path": settings.SCALER_PATH,
+                }
+
+                print(
+                    f"Loaded local model: {settings.MODEL_PATH}"
+                )
+
+            except Exception as e:
+                raise ModelLoadError(
+                    f"Failed to load local model: {e}"
+                ) from e
+
+        elif settings.MODEL_SOURCE == settings.MODEL_SOURCE_MLFLOW:
+            self.registry = ModelRegistry()
+
+            try:
+                self.model, self.scaler, self.model_info = (
+                    self.registry.load_production_model(
+                        model_name=MLFLOW_MODEL_NAME,
+                        alias=settings.MLFLOW_ALIAS,
+                    )
+                )
+
+                print(
+                    f"Loaded MLflow model: "
+                    f"{self.model_info['name']} "
+                    f"version={self.model_info['version']} "
+                    f"alias={self.model_info['alias']}"
+                )
+
+            except Exception as e:
+                raise ModelLoadError(
+                    f"Failed to load MLflow model: {e}"
+                ) from e
+
+        else:
+            raise ModelLoadError(
+                f"Unknown model source: {settings.MODEL_SOURCE}"
+            )
+        
     def predict(self, raw_window: list[float]) -> float:
         if len(raw_window) != WINDOW_SIZE:
             raise ValueError(f"Expected {WINDOW_SIZE} values, got {len(raw_window)}")
