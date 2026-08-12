@@ -26,32 +26,7 @@ trade-off, see
 
 The local MLflow environment runs through Docker Compose:
 
-```text
-                 Docker Compose
-
-        ┌─────────────────────┐
-        │       Trainer       │
-        │                     │
-        │   Optuna + LSTM     │
-        │      Training       │
-        └──────────┬──────────┘
-                   │
-                   │ log params
-                   │ log metrics
-                   │ log models
-                   │ log artifacts
-                   ▼
-        ┌─────────────────────┐
-        │       MLflow        │
-        │                     │
-        │  Tracking Server    │
-        │  Model Registry     │
-        └──────────┬──────────┘
-                   │
-             ┌─────┴─────┐
-             ▼           ▼
-       Backend DB    Artifact Storage
-```
+![MLflow Architecture](images/mlflow_architecture.png)
 
 The MLflow service is started with:
 
@@ -69,6 +44,8 @@ and stored using the configured backend and artifact storage.
 
 Each Optuna trial is recorded as an independent MLflow run.
 
+![MLflow Experiment Runs](images/screenshots/mlflow_experiment_runs.png)
+
 ### Parameters
 
 The training pipeline logs parameters such as:
@@ -81,6 +58,8 @@ The training pipeline logs parameters such as:
 * Gradient clipping value.
 * Number of epochs.
 
+![MLflow Trial Parameters](images/screenshots/mlflow_trial_8_parameters.png)
+
 ### Metrics
 
 The training pipeline records validation and test metrics for each Optuna
@@ -92,6 +71,8 @@ The recorded metrics include:
 - MAE.
 - RMSE.
 - Test RMSE%.
+
+![MLflow Trial Metrics](images/screenshots/mlflow_trial_8_metrics.png)
 
 Validation RMSE% is the metric used by Optuna to compare trials and select the
 best hyperparameter configuration.
@@ -125,27 +106,7 @@ results that produced it.
 The project deliberately separates hyperparameter selection, final evaluation,
 and production training.
 
-```text
-                 Optuna Trials
-                      │
-                      ▼
-              Validation RMSE%
-                      │
-                      ▼
-          Best Hyperparameter Config
-                      │
-                      ▼
-              Candidate Model
-             (train + validation)
-                      │
-                      ▼
-          Final Test Evaluation
-                  (once)
-                      │
-                      ▼
-             Production Model
-          (train + validation + test)
-```
+![MLflow Model Selection and Promotion](images/mlflow_model_selection_promotion.png)
 
 Two rules are fundamental:
 
@@ -177,6 +138,7 @@ The registered model is:
 ```text
 LSTMStockPredictor
 ```
+![MLflow Model Registry](images/screenshots/mlflow_model_registry.png)
 
 Two aliases are used:
 

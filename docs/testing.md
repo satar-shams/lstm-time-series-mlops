@@ -21,21 +21,7 @@ the system as it moves toward deployment.
 
 ## Testing Architecture
 
-```text
-                         Test Suite
-                              │
-             ┌────────────────┼────────────────┐
-             │                │                │
-             ▼                ▼                ▼
-        Unit Tests      Integration Tests   Smoke Tests
-         mocked         real application    real Docker
-        components      / MLflow when run     container
-             │                │                │
-             └────────────────┴────────────────┘
-                              │
-                              ▼
-                    CI validation pipeline
-```
+![Testing Architecture](images/testing_architecture.png)
 
 The regular CI test suite does **not** require a running MLflow server. Live
 integration tests are kept separate from the fast CI path.
@@ -201,21 +187,7 @@ image**.
 
 The workflow:
 
-```text
-Build API Image
-       │
-       ▼
-Start Container
-       │
-       ▼
-Wait for Startup
-       │
-       ▼
-GET /api/v1/health
-       │
-       ▼
-POST /api/v1/predict
-```
+![CI Container Smoke Test](images/ci_container_smoke_test.png)
 
 The container runs with:
 

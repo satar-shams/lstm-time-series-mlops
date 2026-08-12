@@ -4,47 +4,48 @@
 
 The project implements an end-to-end MLOps pipeline for time-series
 forecasting using a stacked LSTM model. The architecture separates data
-processing, model training, experiment tracking, model management, inference,
-testing, and deployment into independent, composable components.
+acquisition and preprocessing, model training and optimization, experiment
+tracking and model management, inference, testing, and deployment into
+independent, composable components.
 
 The main components are:
 
-* **Data pipeline** — downloads and validates historical stock data,
+- **Data pipeline** — downloads and validates historical stock data,
   performs preprocessing, scaling, and chronological train/validation/test
   splitting.
 
-* **Training pipeline** — runs LSTM training, Optuna hyperparameter
+- **Training pipeline** — performs LSTM training, Optuna hyperparameter
   optimization, evaluation, and final model retraining through a modular
   training architecture.
 
-* **Experiment tracking and model management** — uses MLflow for experiment
+- **Experiment tracking and model management** — uses MLflow for experiment
   tracking, artifact storage, and Model Registry functionality with
   alias-based model versioning.
 
-* **Inference service** — provides a FastAPI API for predictions with support
-  for two model-loading strategies: local model artifacts or MLflow Model
+- **Inference service** — provides a FastAPI API for predictions with support
+  for two model-loading strategies: local model artifacts or the MLflow Model
   Registry.
 
-* **Containerized deployment** — uses Docker and Docker Compose to separate
+- **Containerized deployment** — uses Docker and Docker Compose to separate
   the API, training, and MLflow services into independent environments.
 
-* **CI/CD and cloud deployment** — uses GitHub Actions for automated testing,
+- **CI/CD and cloud deployment** — uses GitHub Actions for automated testing,
   container smoke tests, and image publishing, with the API deployed to
   Render.
-
 ---
 
 ## End-to-End Pipeline
 
-The complete workflow consists of separate stages for data preparation,
-model optimization, candidate evaluation, production retraining, model
-management, serving, and deployment.
+The complete workflow consists of separate stages for data acquisition and
+preprocessing, model optimization, candidate evaluation, production
+retraining, model management, inference, and deployment.
 
 ![System Architecture](images/system_architecture.png)
 
 The diagram shows the complete path from historical market data through
-training and model management to the FastAPI inference service and cloud
-deployment.
+preprocessing and model training to MLflow-based model management, the
+FastAPI inference service, and cloud deployment.
+
 ### Data and preprocessing
 
 The pipeline retrieves historical AAPL stock price data using `yfinance`.
@@ -54,9 +55,9 @@ days.
 
 The dataset is split chronologically:
 
-* **Training set** — used for learning model parameters.
-* **Validation set** — used for hyperparameter selection and model comparison.
-* **Test set** — kept untouched until final candidate evaluation.
+- **Training set** — used for learning model parameters.
+- **Validation set** — used for hyperparameter selection and model comparison.
+- **Test set** — kept untouched until final candidate evaluation.
 
 The current split is **90% training / 5% validation / 5% test**, with no
 random shuffling. Chronological splitting prevents future information from
@@ -64,9 +65,19 @@ leaking into model development.
 
 ### Model optimization and training
 
+The forecasting model uses a stacked LSTM architecture.
+
+![LSTM Model Architecture](images/lstm_model_architecture.png)
+
+The model receives a 30-day rolling window of closing prices and processes the
+sequence through two LSTM layers, followed by dense layers and a final
+single-value output representing the next-day closing price.
+
 Optuna performs hyperparameter optimization using validation RMSE% as the
-optimization objective. Each trial is tracked in MLflow with its parameters,
-metrics, and model artifacts.
+optimization objective.
+
+Each trial is tracked in MLflow with its hyperparameters, metrics, and model
+artifacts.
 
 After selecting the best configuration:
 
@@ -88,44 +99,37 @@ The reasoning behind this three-stage training design is documented in
 The inference layer uses FastAPI and a single `Predictor` interface. The
 model source is selected through the `MODEL_SOURCE` environment variable:
 
-* **`local`** — loads the model and scaler from artifacts packaged inside the
+- **`local`** — loads the model and scaler from artifacts packaged inside the
   API container.
-* **`mlflow`** — loads the production model through the MLflow Model Registry.
+- **`mlflow`** — loads the production model through the MLflow Model Registry.
 
-The current cloud deployment uses local artifact loading. The full
-deployment workflow and migration path are documented in
+The current cloud deployment uses local artifact loading. The full deployment
+workflow and migration path are documented in
 [`deployment.md`](deployment.md).
 
 ---
 
 ## Docker Architecture
 
-Docker Compose separates the main services into independent containers:
+Docker Compose separates the main services into independent containers, each
+with its own runtime environment and dependency set.
+
+![Docker Services](images/screenshots/docker_services.png)
+
+The local environment consists of three main services:
 
 ```text
-                    Docker Compose
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-    trainer             mlflow              api
-   (one-shot)       (long-running)     (long-running)
-
- Dockerfile.trainer  Dockerfile.mlflow  Dockerfile.api
-
- requirements.trainer.lock
- requirements.mlflow.lock
- requirements.api.lock
-
-        │                  │                  │
-        └──────────► MLflow Model Registry ◄──┘
-                           │
-                           ▼
-                 MLflow Artifact Storage
+Docker Compose
+│
+├── trainer
+│   └── one-shot training job
+│
+├── mlflow
+│   └── long-running tracking and registry service
+│
+└── api
+    └── long-running FastAPI inference service
 ```
-
-Each service has its own Dockerfile and pinned dependency file because its
-runtime requirements are different.
 
 ### Trainer service
 
@@ -217,32 +221,32 @@ isolation decision rather than an image-size optimization.
 The inference layer supports two model-loading strategies through the
 `MODEL_SOURCE` environment variable.
 
-`Predictor` is the single interface used by the API for inference. The rest
-of the application does not need to know where the model is stored.
+`Predictor` provides a single interface for model loading and inference. The
+rest of the application does not need to know where the model is stored or
+how it is retrieved.
 
 ```text
-                    FastAPI
-                       │
-                       ▼
-                  Predictor
-                       │
-          ┌────────────┴────────────┐
-          │                         │
-          ▼                         ▼
-   MODEL_SOURCE=local        MODEL_SOURCE=mlflow
-          │                         │
-          ▼                         ▼
-    Local artifacts          MLflow Model Registry
-          │                         │
-          │                         ▼
-          │                 Model alias: production
-          │
-          ├── models/production_model.keras
-          └── models/scaler.bin
+                         FastAPI
+                            │
+                            ▼
+                        Predictor
+                            │
+                 ┌──────────┴──────────┐
+                 │                     │
+                 ▼                     ▼
+        MODEL_SOURCE=local      MODEL_SOURCE=mlflow
+                 │                     │
+                 ▼                     ▼
+        Local model artifacts   MLflow Model Registry
+                 │                     │
+                 │                     ▼
+                 │             Model alias: production
+                 │
+        ┌────────┴────────┐
+        │                 │
+        ▼                 ▼
+production_model.keras  scaler.bin
 ```
-
-Changing the model source requires only an environment configuration change;
-the application code remains unchanged.
 
 ### Local model loading
 
@@ -301,24 +305,25 @@ The tradeoffs between the two serving modes are documented in
 
 ## Current Production Deployment
 
-The live deployment uses the lightweight local artifact architecture:
+The live deployment uses the lightweight local-artifact serving architecture.
 
 ```text
-Training (local, Docker Compose)
-              │
-              ▼
-      Production artifacts
-              │
-              ├── models/production_model.keras
-              └── models/scaler.bin
-              │
-              ▼
-       API Docker image
-       (COPY models ./models)
-              │
-              ▼
-      Render Cloud Deployment
-        (MODEL_SOURCE=local)
+Training
+(local, Docker Compose)
+│
+▼
+Production artifacts
+│
+├── models/production_model.keras
+└── models/scaler.bin
+│
+▼
+API Docker image
+(COPY models ./models)
+│
+▼
+Render Cloud Deployment
+(MODEL_SOURCE=local)
 ```
 
 The deployed API does not require an MLflow server at runtime.
@@ -330,39 +335,30 @@ are documented in [`deployment.md`](deployment.md).
 
 ## CI/CD Architecture
 
-GitHub Actions provides automated validation and image publishing.
+GitHub Actions provides automated validation and container image publishing
+for the project.
 
-The CI/CD workflow consists of three main stages:
+![CI/CD Pipeline](images/ci_cd_pipeline.png)
 
-```text
-                 GitHub Actions
-                       │
-                       ▼
-                 Unit Tests
-                       │
-                       ▼
-              Container Smoke Test
-                       │
-                       ▼
-             Build & Publish Images
-                       │
-                       ▼
-             GitHub Container Registry
-```
+The workflow runs on pushes to `main`, `dev`, and `ci-cd-test`, and on pull
+requests targeting `main` or `dev`.
 
-The workflow:
+The pipeline consists of three main stages:
 
-1. Runs the unit test suite with external MLflow-dependent tests excluded.
-2. Builds the actual API image and runs a container smoke test against the
-   health and prediction endpoints.
-3. On push events, publishes the API, trainer, and MLflow images to GitHub
-   Container Registry after the previous stages succeed.
+1. **Unit tests** — runs the fast test suite with external MLflow-dependent
+   tests excluded.
+2. **Container smoke test** — builds the real API image, starts it as a
+   container, and verifies the health and prediction endpoints through real
+   HTTP requests.
+3. **Build and publish** — on push events, builds and publishes the API,
+   trainer, and MLflow images to GitHub Container Registry after the previous
+   stages succeed.
 
 The complete workflow and testing strategy are documented in
 [`testing.md`](testing.md).
 
 ---
-# Project Structure
+## Project Structure
 
 The repository is intentionally organised around clear separation of concerns: **ML pipeline, model training, inference, API serving, testing, documentation, and deployment infrastructure**.
 
@@ -426,21 +422,23 @@ lstm-time-series-mlops/
 │       └── prediction.py                # PredictRequest + PredictResponse
 │
 ├── tests/                                # Automated test suite
-│   ├── test_api.py                      # API health + prediction integration tests
-│   ├── test_data_loader.py              # StockLoader tests with mocked yfinance
+│   ├── test_api.py                      # FastAPI integration tests
+│   ├── test_data_loader.py              # StockLoader unit tests
 │   ├── test_lstm_model.py               # LSTMForecaster unit tests
-│   ├── test_model_registry.py           # ModelRegistry tests with mocked MLflow
-│   ├── test_predictor.py                # Predictor unit tests for serving modes
-│   ├── test_predictor_integration.py    # Predictor end-to-end integration test
-│   └── test_preprocessor.py             # Windowing, splitting and scaler tests
+│   ├── test_model_registry.py           # ModelRegistry unit tests
+│   ├── test_predictor.py                # Predictor unit tests
+│   ├── test_predictor_integration.py    # MLflow inference integration test
+│   └── test_preprocessor.py             # Preprocessing and split tests
 │
 ├── docs/                                  # Project documentation
 │   ├── architecture.md                  # System architecture and repository structure
-│   ├── decisions.md                     # Important engineering/design decisions
-│   ├── deployment.md                    # Deployment and production serving documentation
-│   ├── mlflow.md                        # MLflow tracking, registry and artifact workflow
-│   ├── testing.md                       # Testing strategy and verification procedures
-│   └── images/                           # Architecture, MLflow, Docker and deployment screenshots
+│   ├── decisions.md                     # Engineering decisions
+│   ├── deployment.md                    # Deployment and production serving
+│   ├── mlflow.md                        # MLflow tracking and model management
+│   ├── testing.md                       # Testing strategy and verification
+│   └── images/
+│       ├── screenshots/                 # UI and deployment screenshots
+│       └── ...                          # Documentation diagrams
 │
 ├── notebooks/                            # Historical experiments and MLflow demonstrations
 │   ├── LSTM_Training_MLflow.ipynb       # MLflow training experiments
@@ -473,24 +471,3 @@ lstm-time-series-mlops/
 └── README.md                             # Project overview and quickstart
 ```
 
-## Future Improvements
-
-The current architecture is complete for the project's intended scope.
-Potential improvements include:
-
-* **External artifact storage** — move MLflow artifacts to S3-compatible
-  storage for a managed or remotely hosted MLflow deployment.
-* **Automated retraining** — replace the manual
-  `docker compose run --rm trainer` workflow with scheduled or event-driven
-  retraining.
-* **Window-size optimization** — add the rolling window size as an Optuna
-  hyperparameter, with the required per-configuration data reshaping.
-* **Validation improvements** — add walk-forward/time-series cross-validation
-  for more robust generalization estimates.
-* **Deployment optimization** — investigate `tensorflow-cpu` and multi-stage
-  builds if image size or memory becomes a practical constraint.
-* **Monitoring** — add service-health monitoring, data-drift detection, and
-  post-deployment model performance tracking.
-
-These items are tracked as optional future work rather than blockers for the
-current project.

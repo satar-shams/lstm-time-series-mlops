@@ -8,19 +8,21 @@ relevant details are linked to the incident records in the
 
 ---
 
-## Use chronological train/validation/test splitting
+**## Use chronological train/validation/test splitting**
 
-### Decision
+![Chronological Data Split](images/chronological_data_split.png)
+
+**### Decision**
 
 Use a chronological three-way split:
 
-* **90% training**
-* **5% validation**
-* **5% test**
+- **90% training**
+- **5% validation**
+- **5% test**
 
 with no random shuffling.
 
-### Reason
+**### Reason**
 
 This is a time-series forecasting problem, so future observations must not
 influence model development for earlier periods.
@@ -33,7 +35,7 @@ The validation set is used for hyperparameter optimization and model
 comparison, while the test set remains isolated until final candidate
 evaluation.
 
-### Consequence
+**### Consequence**
 
 The current split was reached empirically rather than assumed from the
 beginning. An earlier 70/15/15 split produced a substantially larger
@@ -45,12 +47,10 @@ changing the split ratio; the investigation is documented in the
 
 ## Fit `StandardScaler` on training data only
 
-### Decision
+![StandardScaler Data Leakage](images/standard_scaler_data_leakage.png)
 
 Fit `StandardScaler` exclusively on the training data and use the fitted
 scaler unchanged for validation, test, and future inference data.
-
-### Reason
 
 Fitting the scaler on validation or test data would expose information about
 those datasets to the training pipeline, creating a form of data leakage.
@@ -134,18 +134,20 @@ in [`mlflow.md`](mlflow.md).
 
 ---
 
-## Separate candidate and production model roles
+**## Separate candidate and production model roles**
 
-### Decision
+![Candidate and Production Model Roles](images/candidate_production_model_roles.png)
+
+**### Decision**
 
 Every completed training workflow produces two distinct model roles:
 
-* **`candidate`** — trained on train + validation and evaluated once on the
+- **`candidate`** — trained on train + validation and evaluated once on the
   untouched test set.
-* **`production`** — retrained on train + validation + test using the proven
+- **`production`** — retrained on train + validation + test using the proven
   configuration.
 
-### Reason
+**### Reason**
 
 The two models answer different questions.
 
@@ -161,10 +163,11 @@ The production model answers:
 > What model should actually be deployed after the configuration has been
 > validated?
 
-Once the candidate configuration has been evaluated, Once the candidate configuration has been evaluated, the production model is retrained using all available historical data so that the deployed model can benefit from the maximum amount of training information.
+Once the candidate configuration has been evaluated, the production model is
+retrained using all available historical data so that the deployed model can
+benefit from the maximum amount of training information.
 
-
-### Consequence
+**### Consequence**
 
 The production model has no independent held-out test score of its own because
 the available test data has already been used to validate the candidate

@@ -24,6 +24,15 @@ This README covers the essentials. For deeper detail, see:
 
 ---
 
+## System Architecture
+
+The project follows a production-oriented pipeline from data acquisition through
+model training, model registry management, API serving, and cloud deployment.
+
+![System Architecture](docs/images/system_architecture.png)
+
+---
+
 ## Tech stack
 
 | Layer                 | Tools                                                                                 |
@@ -103,6 +112,7 @@ A smaller test set (5% of history, ~200 trading days) also means a noisier gener
 | Training pipeline | Three tiers — search (validation) → candidate (train+val, tested once) → production (all data) |
 | Model management  | MLflow Model Registry, alias-based versioning (`candidate` / `production`)                     |
 
+![LSTM Model Architecture](docs/images/lstm_model_architecture.png)
 ---
 
 ## Model serving: local file vs. MLflow Registry
@@ -252,7 +262,7 @@ lstm-time-series-mlops/
 ├── src/                    # ML pipeline: data, training, inference
 ├── app/                    # FastAPI serving application
 ├── tests/                  # Unit and integration tests
-├── docs/                   # Architecture, decisions, deployment, MLflow, testing
+├── docs/                   # Architecture, decisions, deployment, MLflow, testing, Images, Screenshots
 ├── notebooks/              # MLflow experiments and legacy training reference
 ├── models/                 # Production model artifacts (~2.6 MB)
 ├── Dockerfile.api          # API container image
@@ -273,6 +283,8 @@ For the complete annotated tree, see [`docs/architecture.md`](docs/architecture.
 ## CI/CD
 
 `.github/workflows/ci.yml` runs on every push to `main`, `dev`, and `ci-cd-test`, and on pull requests targeting `main` or `dev`.
+
+![CI/CD Pipeline](docs/images/ci_cd_pipeline.png)
 
 ### 1. Unit tests
 

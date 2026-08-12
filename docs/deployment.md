@@ -26,25 +26,7 @@ The engineering reasoning behind this choice is documented in
 
 The deployed architecture is:
 
-```text
-Local Training
-      │
-      ▼
-Docker Compose Trainer
-      │
-      ▼
-Production Artifacts
-models/production_model.keras
-models/scaler.bin
-      │
-      ▼
-API Docker Image
-(COPY models ./models)
-      │
-      ▼
-Render Cloud Deployment
-(MODEL_SOURCE=local)
-```
+![Current Production Deployment](images/current_production_deployment.png)
 
 The API image is self-contained. It contains the FastAPI application,
 pinned dependencies, trained production model, and scaler. No external model
@@ -272,40 +254,7 @@ current deployment.
 
 The intended evolution is:
 
-```text
-Current
-Local Training
-     │
-     ▼
-Production Model
-     │
-     ▼
-API Image + Model
-     │
-     ▼
-Render
-```
-
-toward:
-
-```text
-Training
-     │
-     ▼
-MLflow Tracking
-     │
-     ▼
-Model Registry
-     │
-     ▼
-Production Alias
-     │
-     ▼
-FastAPI
-     │
-     ▼
-Cloud Infrastructure
-```
+![Deployment Evolution](images/deployment_evolution.png)
 
 The current architecture therefore provides a lightweight deployment that
 works within constrained infrastructure while preserving a clear migration
