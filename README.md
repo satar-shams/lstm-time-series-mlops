@@ -171,7 +171,7 @@ curl http://localhost:5000/health
 > Wait until MLflow is healthy before starting training.
 
 For the reason the MLflow database file must be initialized before Docker startup, see
-[`docs/mlflow.md`](docs/mlflow.md#local-mlflow-database-and-artifact-storage).
+[`docs/mlflow.md`](docs/mlflow.md#local-docker-initialization).
 
 ### Start trainer
 
