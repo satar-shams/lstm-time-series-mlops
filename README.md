@@ -139,10 +139,43 @@ cp .env.example .env
 docker compose build
 ```
 
-### Start MLflow and train
+
+### Start MLflow 
+
+Before starting MLflow, initialize the local database file and artifact directory:
+
+```bash
+rm -rf mlflow.db
+touch mlflow.db
+mkdir -p mlartifacts
+```
+
+Start MLflow:
 
 ```bash
 docker compose up -d mlflow
+```
+
+Check the MLflow container status:
+
+```bash
+docker compose ps
+```
+
+Check MLflow health:
+
+```bash
+curl http://localhost:5000/health
+```
+
+> Wait until MLflow is healthy before starting training.
+
+For the reason the MLflow database file must be initialized before Docker startup, see
+[`docs/mlflow.md`](docs/mlflow.md#local-mlflow-database-and-artifact-storage).
+
+### Start trainer
+
+```bash
 docker compose run --rm trainer
 ```
 
@@ -319,6 +352,17 @@ Full testing strategy: [`docs/testing.md`](docs/testing.md).
 
 ## Run tests
 
+Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+Then:
+
+```bash
+python -m pip install --upgrade pip
+```
 Install the locked runtime dependencies and development dependencies:
 
 ```bash

@@ -40,6 +40,56 @@ and stored using the configured backend and artifact storage.
 
 ---
 
+## Local Docker Initialization
+
+The local MLflow server uses a SQLite backend and a host-mounted artifact
+directory:
+
+```text
+mlflow.db
+mlartifacts/
+```
+
+Before starting the MLflow container for a fresh local environment, create
+these paths explicitly:
+
+```bash
+rm -rf mlflow.db
+touch mlflow.db
+mkdir -p mlartifacts
+```
+
+The `mlflow.db` path must be a **file**, not a directory. This is important
+because Docker bind mounts can create a missing host path as a directory.
+MLflow then cannot use that path as the SQLite database.
+
+After initialization, start MLflow:
+
+```bash
+docker compose up -d mlflow
+```
+
+Verify the container:
+
+```bash
+docker compose ps
+```
+
+Then verify the MLflow health endpoint:
+
+```bash
+curl http://localhost:5000/health
+```
+
+Training should only be started after MLflow is healthy:
+
+```bash
+docker compose run --rm trainer
+```
+
+This initialization is required for a fresh local Docker environment and is
+also useful when recreating the MLflow environment from scratch.
+
 ## Experiment Tracking
 
 Each Optuna trial is recorded as an independent MLflow run.
